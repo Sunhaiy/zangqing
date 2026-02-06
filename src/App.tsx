@@ -157,7 +157,7 @@ function App() {
                           </ErrorBoundary>
                         </div>
                         {aiEnabled && (
-                          <div className="flex-shrink-0 border-t border-border p-2 bg-background/80">
+                          <div className="flex-shrink-0 border-t border-border p-1.5 bg-background/40 backdrop-blur-sm">
                             <AICommandInput
                               onCommandGenerated={(cmd) => {
                                 window.electron?.writeTerminal(session.uniqueId, cmd);

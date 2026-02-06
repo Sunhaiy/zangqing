@@ -21,7 +21,8 @@ export function TerminalView({ connectionId }: TerminalViewProps) {
     lineHeight,
     letterSpacing,
     cursorStyle,
-    cursorBlink
+    cursorBlink,
+    aiEnabled
   } = useSettingsStore();
   const {
     rendererType,
@@ -42,15 +43,17 @@ export function TerminalView({ connectionId }: TerminalViewProps) {
     if (!termRef.current) return;
 
     // Update terminal theme when app theme changes
-    termRef.current.options.theme = {
-      ...theme.terminal,
-      selection: theme.terminal.selectionBackground
-    };
+    if (termRef.current && theme.terminal) {
+      termRef.current.options.theme = {
+        ...theme.terminal,
+        selectionBackground: theme.terminal.selectionBackground
+      };
+    }
   }, [theme]);
 
   // Handle Theme Change
   useEffect(() => {
-    if (termRef.current) {
+    if (termRef.current && terminalTheme) {
       termRef.current.options.theme = terminalTheme;
     }
   }, [terminalTheme]);
@@ -101,11 +104,10 @@ export function TerminalView({ connectionId }: TerminalViewProps) {
         lineHeight: settings.lineHeight,
         scrollback: settings.scrollback,
         drawBoldTextInBrightColors: settings.brightBold,
-        bellStyle: settings.bellStyle,
+        bellStyle: settings.bellStyle as any,
         allowProposedApi: true,
         theme: {
-          ...currentTerminalTheme,
-          // selectionBackground is already in theme.terminal
+          ...(currentTerminalTheme || {}),
         }
       });
 
@@ -162,10 +164,15 @@ export function TerminalView({ connectionId }: TerminalViewProps) {
       };
 
       const nativeContextMenu = (e: MouseEvent) => {
-        e.preventDefault();
         const selection = term.getSelection();
+
+        // Capture selection immediately
+        const hasSel = !!selection && selection.length > 0;
         setSelectionText(selection || '');
-        setHasSelection(!!selection && selection.length > 0);
+        setHasSelection(hasSel);
+
+        // Always prevent default and show our context menu
+        e.preventDefault();
         setMenuPos({ x: e.clientX, y: e.clientY });
       };
 
@@ -201,10 +208,20 @@ export function TerminalView({ connectionId }: TerminalViewProps) {
     };
 
     // We need to manage cleanup manually since initTerminal is async
+    let isMounted = true;
     let cleanupFn: (() => void) | undefined;
-    initTerminal().then(fn => { cleanupFn = fn; });
+
+    initTerminal().then(fn => {
+      if (isMounted) {
+        cleanupFn = fn;
+      } else {
+        // If unmounted before init finished, run cleanup immediately
+        fn();
+      }
+    });
 
     return () => {
+      isMounted = false;
       if (cleanupFn) cleanupFn();
     };
   }, [connectionId, rendererType]); // Only re-init if connectionId or renderer type changes (canvas vs webgl)
@@ -244,7 +261,7 @@ export function TerminalView({ connectionId }: TerminalViewProps) {
       <div
         ref={containerRef}
         className="h-full w-full"
-        style={{ background: theme.terminal.background }}
+        style={{ background: theme?.terminal?.background || '#000' }}
       />
 
       {menuPos && (
@@ -252,6 +269,7 @@ export function TerminalView({ connectionId }: TerminalViewProps) {
           x={menuPos.x}
           y={menuPos.y}
           hasSelection={hasSelection}
+          aiEnabled={aiEnabled}
           onCopy={handleCopy}
           onExplain={handleExplain}
           onFix={handleFix}

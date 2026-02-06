@@ -6,6 +6,7 @@ interface TerminalContextMenuProps {
     x: number;
     y: number;
     hasSelection: boolean;
+    aiEnabled: boolean;
     onCopy: () => void;
     onExplain: () => void;
     onFix: () => void;
@@ -16,6 +17,7 @@ export function TerminalContextMenu({
     x,
     y,
     hasSelection,
+    aiEnabled,
     onCopy,
     onExplain,
     onFix,
@@ -23,7 +25,7 @@ export function TerminalContextMenu({
 }: TerminalContextMenuProps) {
     // Ensure menu stays within viewport
     const menuWidth = 200;
-    const menuHeight = 160;
+    const menuHeight = aiEnabled ? 160 : 60; // Approximate heights
     const padding = 10;
 
     const adjustedX = Math.min(x, window.innerWidth - menuWidth - padding);
@@ -58,31 +60,35 @@ export function TerminalContextMenu({
                     <span className="ml-auto text-[10px] text-muted-foreground">Ctrl+C</span>
                 </button>
 
-                <div className="h-px bg-border my-1" />
+                {aiEnabled && (
+                    <>
+                        <div className="h-px bg-border my-1" />
 
-                <button
-                    onClick={() => {
-                        onExplain();
-                        onClose();
-                    }}
-                    disabled={!hasSelection}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-primary/10 hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed group"
-                >
-                    <HelpCircle className="w-4 h-4 text-indigo-500" />
-                    <span>AI 解释 (Explain)</span>
-                </button>
+                        <button
+                            onClick={() => {
+                                onExplain();
+                                onClose();
+                            }}
+                            disabled={!hasSelection}
+                            className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-primary/10 hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed group"
+                        >
+                            <HelpCircle className="w-4 h-4 text-indigo-500" />
+                            <span>AI 解释 (Explain)</span>
+                        </button>
 
-                <button
-                    onClick={() => {
-                        onFix();
-                        onClose();
-                    }}
-                    disabled={!hasSelection}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-orange-500/10 hover:text-orange-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed group"
-                >
-                    <AlertTriangle className="w-4 h-4 text-orange-500" />
-                    <span>AI 修复 (Fix)</span>
-                </button>
+                        <button
+                            onClick={() => {
+                                onFix();
+                                onClose();
+                            }}
+                            disabled={!hasSelection}
+                            className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-orange-500/10 hover:text-orange-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed group"
+                        >
+                            <AlertTriangle className="w-4 h-4 text-orange-500" />
+                            <span>AI 修复 (Fix)</span>
+                        </button>
+                    </>
+                )}
             </div>
         </>,
         document.body

@@ -26,6 +26,7 @@ interface SettingsState {
     aiBaseUrl: string;
     aiModel: string;
     aiPrivacyMode: boolean;
+    aiSendShortcut: 'enter' | 'ctrlEnter';
 
     setLanguage: (lang: Language) => void;
     setUiFontFamily: (font: string) => void;
@@ -49,6 +50,7 @@ interface SettingsState {
     setAiBaseUrl: (url: string) => void;
     setAiModel: (model: string) => void;
     setAiPrivacyMode: (enabled: boolean) => void;
+    setAiSendShortcut: (shortcut: 'enter' | 'ctrlEnter') => void;
 
     initSettings: () => Promise<void>;
 }
@@ -76,6 +78,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     aiBaseUrl: '',
     aiModel: '',
     aiPrivacyMode: false,
+    aiSendShortcut: 'ctrlEnter',
 
     setLanguage: (lang: Language) => {
         set({ language: lang });
@@ -193,6 +196,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         });
     },
 
+    setAiSendShortcut: (shortcut: 'enter' | 'ctrlEnter') => {
+        set({ aiSendShortcut: shortcut });
+        window.electron.storeSet('aiSendShortcut', shortcut);
+    },
+
     initSettings: async () => {
         const savedLang = await window.electron.storeGet('language');
         const savedUiFont = await window.electron.storeGet('uiFontFamily');
@@ -234,6 +242,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const savedAiBaseUrl = await window.electron.storeGet('aiBaseUrl');
         const savedAiModel = await window.electron.storeGet('aiModel');
         const savedAiPrivacyMode = await window.electron.storeGet('aiPrivacyMode');
+        const savedAiSendShortcut = await window.electron.storeGet('aiSendShortcut');
 
         const aiEnabled = typeof savedAiEnabled === 'boolean' ? savedAiEnabled : true;
         const aiProvider = (savedAiProvider as AIProvider) || 'deepseek';
@@ -241,8 +250,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const aiBaseUrl = (savedAiBaseUrl as string) || '';
         const aiModel = (savedAiModel as string) || '';
         const aiPrivacyMode = typeof savedAiPrivacyMode === 'boolean' ? savedAiPrivacyMode : false;
+        const aiSendShortcut = (savedAiSendShortcut as 'enter' | 'ctrlEnter') || 'ctrlEnter';
 
-        set({ aiEnabled, aiProvider, aiApiKey, aiBaseUrl, aiModel, aiPrivacyMode });
+        set({ aiEnabled, aiProvider, aiApiKey, aiBaseUrl, aiModel, aiPrivacyMode, aiSendShortcut });
 
         // Initialize AI service
         if (aiApiKey || aiProvider === 'ollama') {

@@ -42,7 +42,8 @@ export function Settings({ onBack }: SettingsProps) { // Kept original SettingsP
     aiApiKey, setAiApiKey,
     aiBaseUrl, setAiBaseUrl,
     aiModel, setAiModel,
-    aiPrivacyMode, setAiPrivacyMode
+    aiPrivacyMode, setAiPrivacyMode,
+    aiSendShortcut, setAiSendShortcut
   } = useSettingsStore();
 
   const { t } = useTranslation();
@@ -583,6 +584,33 @@ export function Settings({ onBack }: SettingsProps) { // Kept original SettingsP
                         {aiPrivacyMode ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
                         {aiPrivacyMode ? '已开启' : '已关闭'}
                       </button>
+                    </div>
+
+                    {/* Send Shortcut */}
+                    <div className="flex flex-col gap-1.5">
+                      <span className="font-medium text-sm">发送快捷键</span>
+                      <span className="text-xs text-muted-foreground mb-2">
+                        选择生成指令时使用的快捷键方式
+                      </span>
+                      <div className="flex bg-background/50 rounded-md border border-input p-1 w-fit">
+                        {[
+                          { id: 'enter', label: 'Enter' },
+                          { id: 'ctrlEnter', label: 'Ctrl + Enter' }
+                        ].map((shortcut) => (
+                          <button
+                            key={shortcut.id}
+                            onClick={() => setAiSendShortcut(shortcut.id as 'enter' | 'ctrlEnter')}
+                            className={cn(
+                              "px-4 py-1.5 text-xs font-medium rounded-sm transition-colors",
+                              aiSendShortcut === shortcut.id
+                                ? "bg-primary text-primary-foreground shadow-sm"
+                                : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                            )}
+                          >
+                            {shortcut.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </>
                 )}
