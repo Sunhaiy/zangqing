@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FileEntry } from '../shared/types';
 import { Folder, File, ArrowLeft, RefreshCw, Upload, Download, Trash2, MoreVertical, Edit2, Plus, ArrowUp, FolderPlus, Star, Bookmark, X } from 'lucide-react';
 import { FileEditor } from './FileEditor';
@@ -10,20 +11,26 @@ interface FileBrowserProps {
 interface ContextMenu {
   x: number;
   y: number;
-  file: FileEntry;
+  file: FileEntry | null;
 }
 
 export function FileBrowser({ connectionId }: FileBrowserProps) {
-  const [currentPath, setCurrentPath] = useState('.');
+  const [currentPath, setCurrentPath] = useState('/');
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   const [editingFile, setEditingFile] = useState<{ name: string, path: string, content: string } | null>(null);
   const [pathCache, setPathCache] = useState<Record<string, FileEntry[]>>({});
-  const [inputPath, setInputPath] = useState('.');
+  const [inputPath, setInputPath] = useState('/');
   const [bookmarks, setBookmarks] = useState<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ file: string, percent: number } | null>(null);
+  const [inputDialog, setInputDialog] = useState<{
+    title: string;
+    message: string;
+    defaultValue: string;
+    onConfirm: (value: string) => void;
+  } | null>(null);
 
   useEffect(() => {
     // Load bookmarks
@@ -128,7 +135,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
 
   useEffect(() => {
     setPathCache({});
-    loadFiles('.', true);
+    loadFiles('/', true);
 
     const handleClick = () => setContextMenu(null);
     window.addEventListener('click', handleClick);
@@ -168,19 +175,45 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   };
 
   const handleCreateFolder = async () => {
-    const name = prompt('Folder name:');
-    if (name) {
-      setLoading(true);
-      try {
-        const newPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
-        await window.electron.sftpMkdir(connectionId, newPath);
-        loadFiles(currentPath, true);
-      } catch (e) {
-        alert('Create folder failed: ' + e);
-      } finally {
-        setLoading(false);
+    setContextMenu(null);
+    setInputDialog({
+      title: 'New Folder',
+      message: 'Enter folder name:',
+      defaultValue: '',
+      onConfirm: async (name) => {
+        setLoading(true);
+        try {
+          const newPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
+          await window.electron.sftpMkdir(connectionId, newPath);
+          await loadFiles(currentPath, true);
+        } catch (e) {
+          alert('Create folder failed: ' + e);
+        } finally {
+          setLoading(false);
+        }
       }
-    }
+    });
+  };
+
+  const handleCreateFile = async () => {
+    setContextMenu(null);
+    setInputDialog({
+      title: 'New File',
+      message: 'Enter file name:',
+      defaultValue: '',
+      onConfirm: async (name) => {
+        setLoading(true);
+        try {
+          const newPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
+          await window.electron.sftpWriteFile(connectionId, newPath, '');
+          await loadFiles(currentPath, true);
+        } catch (e) {
+          alert('Create file failed: ' + e);
+        } finally {
+          setLoading(false);
+        }
+      }
+    });
   };
 
   const handleDelete = async (file: FileEntry) => {
@@ -215,24 +248,32 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   };
 
   const handleRename = async (file: FileEntry) => {
-    const newName = prompt('New name:', file.name);
-    if (newName && newName !== file.name) {
-      setLoading(true);
-      try {
-        const oldPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
-        const newPath = currentPath === '/' ? `/${newName}` : `${currentPath}/${newName}`;
-        await window.electron.sftpRename(connectionId, oldPath, newPath);
-        loadFiles(currentPath, true);
-      } catch (e) {
-        alert('Rename failed: ' + e);
-      } finally {
-        setLoading(false);
+    setContextMenu(null);
+    setInputDialog({
+      title: 'Rename',
+      message: `Enter new name for ${file.name}:`,
+      defaultValue: file.name,
+      onConfirm: async (newName) => {
+        if (newName && newName !== file.name) {
+          setLoading(true);
+          try {
+            const oldPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+            const newPath = currentPath === '/' ? `/${newName}` : `${currentPath}/${newName}`;
+            await window.electron.sftpRename(connectionId, oldPath, newPath);
+            await loadFiles(currentPath, true);
+          } catch (e) {
+            alert('Rename failed: ' + e);
+          } finally {
+            setLoading(false);
+          }
+        }
       }
-    }
+    });
   };
 
-  const onContextMenu = (e: React.MouseEvent, file: FileEntry) => {
+  const onContextMenu = (e: React.MouseEvent, file: FileEntry | null = null) => {
     e.preventDefault();
+    e.stopPropagation();
     setContextMenu({ x: e.clientX, y: e.clientY, file });
   };
 
@@ -321,17 +362,17 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
         <button onClick={() => loadFiles(currentPath, true)} className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="Refresh">
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
         </button>
-        <button onClick={handleCreateFolder} className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="New Folder">
-          <FolderPlus className="w-4 h-4" />
-        </button>
         <button onClick={handleUpload} className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="Upload">
           <Upload className="w-4 h-4" />
         </button>
       </div>
 
       {/* File List */}
-      <div className="flex-1 overflow-auto bg-background">
-        <div className="flex flex-col">
+      <div
+        className="flex-1 overflow-auto bg-background"
+        onContextMenu={(e) => onContextMenu(e)}
+      >
+        <div className="flex flex-col min-h-full">
           {files.map((file, i) => (
             <div
               key={i}
@@ -355,37 +396,85 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
               </span>
             </div>
           ))}
+          {/* Fill clickable space for context menu */}
+          <div className="flex-1 min-h-[50px]" />
         </div>
       </div>
 
       {/* Context Menu */}
-      {contextMenu && (
-        <div
-          className="fixed bg-popover border border-border shadow-xl rounded py-1 z-50 w-40 text-popover-foreground"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-        >
-          <div className="px-3 py-1 text-xs text-muted-foreground border-b border-border mb-1 truncate">
-            {contextMenu.file.name}
-          </div>
-          <button onClick={() => {
-            if (contextMenu.file.type === '-') {
-              const path = currentPath === '/' ? `/${contextMenu.file.name}` : `${currentPath}/${contextMenu.file.name}`;
-              handleFileOpen(contextMenu.file, path);
+      {contextMenu && createPortal(
+        <>
+          {/* Backdrop to close menu on click outside */}
+          <div
+            className="fixed inset-0 z-[10002]"
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
               setContextMenu(null);
-            }
-          }} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm">
-            <Edit2 className="w-3 h-3" /> Edit
-          </button>
-          <button onClick={() => handleDownload(contextMenu.file)} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm">
-            <Download className="w-3 h-3" /> Download
-          </button>
-          <button onClick={() => handleRename(contextMenu.file)} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm">
-            <Edit2 className="w-3 h-3" /> Rename
-          </button>
-          <button onClick={() => handleDelete(contextMenu.file)} className="w-full text-left px-3 py-1.5 hover:bg-destructive/10 text-destructive flex items-center gap-2 text-sm">
-            <Trash2 className="w-3 h-3" /> Delete
-          </button>
-        </div>
+            }}
+          />
+          <div
+            className="fixed bg-popover border border-border shadow-xl rounded py-1 z-[10003] w-44 text-popover-foreground animate-in fade-in zoom-in-95 duration-100"
+            style={{
+              top: Math.min(contextMenu.y, window.innerHeight - 200),
+              left: Math.min(contextMenu.x, window.innerWidth - 180)
+            }}
+          >
+            {contextMenu.file ? (
+              <>
+                <div className="px-3 py-1 text-xs text-muted-foreground border-b border-border mb-1 truncate font-medium">
+                  {contextMenu.file.name}
+                </div>
+                <button onClick={() => {
+                  if (contextMenu.file?.type === '-') {
+                    const path = currentPath === '/' ? `/${contextMenu.file.name}` : `${currentPath}/${contextMenu.file.name}`;
+                    handleFileOpen(contextMenu.file, path);
+                    setContextMenu(null);
+                  }
+                }} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm disabled:opacity-50" disabled={contextMenu.file.type !== '-'}>
+                  <Edit2 className="w-3.5 h-3.5" /> Edit
+                </button>
+                <button onClick={() => {
+                  if (contextMenu.file) handleDownload(contextMenu.file);
+                  setContextMenu(null);
+                }} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm">
+                  <Download className="w-3.5 h-3.5" /> Download
+                </button>
+                <button onClick={() => {
+                  if (contextMenu.file) handleRename(contextMenu.file);
+                  setContextMenu(null);
+                }} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm">
+                  <Edit2 className="w-3.5 h-3.5" /> Rename
+                </button>
+                <button onClick={() => {
+                  if (contextMenu.file) handleDelete(contextMenu.file);
+                  setContextMenu(null);
+                }} className="w-full text-left px-3 py-1.5 hover:bg-destructive/10 text-destructive flex items-center gap-2 text-sm">
+                  <Trash2 className="w-3.5 h-3.5" /> Delete
+                </button>
+                <div className="h-px bg-border my-1" />
+              </>
+            ) : (
+              <div className="px-3 py-1 text-xs text-muted-foreground border-b border-border mb-1 font-medium">
+                Actions
+              </div>
+            )}
+
+            <button onClick={handleCreateFile} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm text-primary">
+              <Plus className="w-3.5 h-3.5" /> New File
+            </button>
+            <button onClick={handleCreateFolder} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm text-primary">
+              <FolderPlus className="w-3.5 h-3.5" /> New Folder
+            </button>
+            <button onClick={() => { handleUpload(); setContextMenu(null); }} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm">
+              <Upload className="w-3.5 h-3.5" /> Upload File
+            </button>
+            <button onClick={() => { loadFiles(currentPath, true); setContextMenu(null); }} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm border-t border-border mt-1 pt-2">
+              <RefreshCw className="w-3.5 h-3.5" /> Refresh
+            </button>
+          </div>
+        </>,
+        document.body
       )}
 
       {/* File Editor Modal */}
@@ -399,6 +488,55 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
           }}
           onClose={() => setEditingFile(null)}
         />
+      )}
+      {/* Custom Input Dialog */}
+      {inputDialog && createPortal(
+        <div className="fixed inset-0 z-[10010] flex items-center justify-center p-4 bg-background/40 backdrop-blur-[2px]">
+          <div className="w-full max-w-sm bg-card border border-border shadow-2xl rounded-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-4 py-3 border-b border-border bg-muted/50 font-medium text-sm flex justify-between items-center">
+              {inputDialog.title}
+              <button onClick={() => setInputDialog(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 flex flex-col gap-3">
+              <label className="text-sm text-muted-foreground">{inputDialog.message}</label>
+              <input
+                autoFocus
+                className="w-full bg-background border border-border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                defaultValue={inputDialog.defaultValue}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    inputDialog.onConfirm(e.currentTarget.value);
+                    setInputDialog(null);
+                  } else if (e.key === 'Escape') {
+                    setInputDialog(null);
+                  }
+                }}
+                id="dialog-input"
+              />
+              <div className="flex justify-end gap-2 mt-2">
+                <button
+                  onClick={() => setInputDialog(null)}
+                  className="px-4 py-2 text-sm hover:bg-secondary rounded transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    const val = (document.getElementById('dialog-input') as HTMLInputElement).value;
+                    inputDialog.onConfirm(val);
+                    setInputDialog(null);
+                  }}
+                  className="px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded transition-colors"
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

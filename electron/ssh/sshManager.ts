@@ -119,16 +119,25 @@ export class SSHManager {
     // SFTP Operations
     async sftpOperation(id: string, operation: (sftp: any) => Promise<any>): Promise<any> {
         const conn = this.connections.get(id);
-        if (!conn) throw new Error('Not connected');
+        if (!conn) {
+            console.error(`SFTP Operation failed: Connection ${id} not found`);
+            throw new Error('Not connected');
+        }
 
+        console.log(`Starting SFTP Operation for ${id}...`);
         return new Promise((resolve, reject) => {
             conn.sftp(async (err, sftp) => {
-                if (err) return reject(err);
+                if (err) {
+                    console.error('SFTP Subsystem error:', err);
+                    return reject(err);
+                }
                 try {
                     const result = await operation(sftp);
+                    console.log(`SFTP Operation for ${id} completed successfully.`);
                     sftp.end();
                     resolve(result);
                 } catch (opErr) {
+                    console.error('SFTP Operation internal error:', opErr);
                     sftp.end();
                     reject(opErr);
                 }
@@ -188,7 +197,14 @@ export class SSHManager {
 
     async createFolder(id: string, remotePath: string): Promise<void> {
         return this.sftpOperation(id, (sftp) => new Promise((resolve, reject) => {
-            sftp.mkdir(remotePath, (err: any) => err ? reject(err) : resolve(undefined));
+            sftp.mkdir(remotePath, (err: any) => {
+                if (err) {
+                    console.error(`sftp.mkdir failed for ${remotePath}:`, err);
+                    reject(err);
+                } else {
+                    resolve(undefined);
+                }
+            });
         }));
     }
 
@@ -200,27 +216,36 @@ export class SSHManager {
 
     async readFile(id: string, remotePath: string): Promise<string> {
         return this.sftpOperation(id, (sftp) => new Promise((resolve, reject) => {
+            console.log(`Reading ${remotePath}...`);
             // Check size first to avoid crashing on huge files
             sftp.stat(remotePath, (err: any, stats: any) => {
                 if (err) return reject(err);
                 if (stats.size > 10 * 1024 * 1024) return reject(new Error('File too large (>10MB)'));
 
-                let data = '';
-                const stream = sftp.createReadStream(remotePath);
-                stream.on('data', (chunk: Buffer) => data += chunk.toString());
-                stream.on('end', () => resolve(data));
-                stream.on('error', (err: any) => reject(err));
+                sftp.readFile(remotePath, (err: any, data: Buffer) => {
+                    if (err) {
+                        console.error(`sftp.readFile failed for ${remotePath}:`, err);
+                        reject(err);
+                    } else {
+                        resolve(data.toString());
+                    }
+                });
             });
         }));
     }
 
     async writeFile(id: string, remotePath: string, content: string): Promise<void> {
         return this.sftpOperation(id, (sftp) => new Promise((resolve, reject) => {
-            const stream = sftp.createWriteStream(remotePath);
-            stream.on('finish', () => resolve(undefined));
-            stream.on('error', (err: any) => reject(err));
-            stream.write(content);
-            stream.end();
+            console.log(`Writing to ${remotePath}...`);
+            // sftp.writeFile is more reliable for small updates/creation than raw streams
+            sftp.writeFile(remotePath, content, (err: any) => {
+                if (err) {
+                    console.error(`sftp.writeFile failed for ${remotePath}:`, err);
+                    reject(err);
+                } else {
+                    resolve(undefined);
+                }
+            });
         }));
     }
 
