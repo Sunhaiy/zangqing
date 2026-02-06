@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
 import { FileEntry } from '../shared/types';
-import {
-  Folder, File, RefreshCw, Upload, FolderPlus,
-  ArrowUp, Download, Trash2, Edit2, MoreVertical
-} from 'lucide-react';
+import { Folder, File, ArrowLeft, RefreshCw, Upload, Download, Trash2, MoreVertical, Edit2, Plus, ArrowUp, FolderPlus, Star, Bookmark, X } from 'lucide-react';
+import { FileEditor } from './FileEditor';
 
 interface FileBrowserProps {
   connectionId: string;
@@ -20,13 +18,32 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
+  const [editingFile, setEditingFile] = useState<{ name: string, path: string, content: string } | null>(null);
   const [pathCache, setPathCache] = useState<Record<string, FileEntry[]>>({});
+  const [inputPath, setInputPath] = useState('.');
+  const [bookmarks, setBookmarks] = useState<string[]>([]);
+
+  useEffect(() => {
+    // Load bookmarks
+    window.electron.storeGet('bookmarks').then(stored => {
+      if (Array.isArray(stored)) setBookmarks(stored);
+    });
+  }, []);
+
+  const toggleBookmark = (path: string) => {
+    const newBookmarks = bookmarks.includes(path)
+      ? bookmarks.filter(b => b !== path)
+      : [...bookmarks, path];
+    setBookmarks(newBookmarks);
+    window.electron.storeSet('bookmarks', newBookmarks);
+  };
 
   const loadFiles = async (path: string, force = false) => {
     // Optimistic cache hit
     if (!force && pathCache[path]) {
       setFiles(pathCache[path]);
       setCurrentPath(path);
+      setInputPath(path);
       // We can still fetch in background if needed, but for now trust cache unless forced
       return;
     }
@@ -41,6 +58,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
         if (!force && pathCache[path]) {
           setFiles(pathCache[path]);
           setCurrentPath(path);
+          setInputPath(path);
           setLoading(false);
           return;
         }
@@ -51,9 +69,26 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
       setFiles(newFiles);
       setPathCache(prev => ({ ...prev, [path]: newFiles }));
       setCurrentPath(path);
+      setInputPath(path);
     } catch (err) {
       console.error(err);
       setFiles([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFileOpen = async (file: FileEntry, path: string) => {
+    setLoading(true);
+    try {
+      const content = await window.electron.sftpReadFile(connectionId, path);
+      setEditingFile({
+        name: file.name,
+        path: path,
+        content: content
+      });
+    } catch (err) {
+      alert('Cannot open file: ' + err);
     } finally {
       setLoading(false);
     }
@@ -174,13 +209,61 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   return (
     <div className="flex flex-col h-full bg-background border-r border-border text-foreground">
       {/* Toolbar */}
-      <div className="p-2 border-b border-border flex items-center gap-1 bg-card">
+      <div className="p-2 border-b border-border flex items-center gap-2 bg-card">
         <button onClick={handleUp} className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="Up">
           <ArrowUp className="w-4 h-4" />
         </button>
-        <div className="flex-1 mx-2 bg-background border border-border rounded px-2 py-1 text-xs font-mono truncate text-foreground">
-          {currentPath}
+
+        <div className="flex-1 flex items-center gap-1 bg-background border border-border rounded px-2 h-8">
+          <input
+            className="flex-1 bg-transparent border-none outline-none text-sm font-mono h-full"
+            value={inputPath}
+            onChange={(e) => setInputPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                loadFiles(inputPath);
+              }
+            }}
+          />
+          {/* Bookmark Toggle */}
+          <button
+            onClick={() => toggleBookmark(currentPath)}
+            className={`p-1 rounded transition-colors ${bookmarks.includes(currentPath) ? 'text-yellow-500' : 'text-muted-foreground hover:text-foreground'}`}
+            title="Bookmark current path"
+          >
+            <Star className={`w-3.5 h-3.5 ${bookmarks.includes(currentPath) ? 'fill-current' : ''}`} />
+          </button>
         </div>
+
+        {/* Bookmarks Dropdown Trigger (Simple popover logic needed or just a list in a modal, I'll use a simple dropdown approach) */}
+        <div className="relative group">
+          <button className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="Bookmarks">
+            <Bookmark className="w-4 h-4" />
+          </button>
+          <div className="absolute right-0 top-full mt-1 w-48 bg-popover border border-border rounded shadow-xl hidden group-hover:block z-50">
+            <div className="p-2 text-xs font-medium text-muted-foreground border-b border-border">Favorites</div>
+            {bookmarks.length === 0 ? (
+              <div className="p-2 text-xs text-muted-foreground italic">No bookmarks</div>
+            ) : (
+              bookmarks.map(path => (
+                <div
+                  key={path}
+                  className="px-3 py-2 hover:bg-secondary cursor-pointer text-xs truncate flex justify-between items-center"
+                  onClick={() => loadFiles(path)}
+                >
+                  <span className="truncate flex-1" title={path}>{path}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleBookmark(path); }}
+                    className="text-muted-foreground hover:text-destructive ml-2"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
         <button onClick={() => loadFiles(currentPath, true)} className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="Refresh">
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
         </button>
@@ -200,6 +283,12 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
               key={i}
               className="flex items-center gap-2 px-3 py-2 hover:bg-secondary cursor-pointer text-sm group transition-colors select-none"
               onClick={() => file.type === 'd' && handleNavigate(file)}
+              onDoubleClick={() => {
+                if (file.type === '-') {
+                  const path = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+                  handleFileOpen(file, path);
+                }
+              }}
               onContextMenu={(e) => onContextMenu(e, file)}
             >
               {file.type === 'd' ?
@@ -224,6 +313,16 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
           <div className="px-3 py-1 text-xs text-muted-foreground border-b border-border mb-1 truncate">
             {contextMenu.file.name}
           </div>
+          <button onClick={() => {
+            // Trigger edit if it's a file
+            if (contextMenu.file.type === '-') {
+              const path = currentPath === '/' ? `/${contextMenu.file.name}` : `${currentPath}/${contextMenu.file.name}`;
+              handleFileOpen(contextMenu.file, path);
+              setContextMenu(null);
+            }
+          }} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm">
+            <Edit2 className="w-3 h-3" /> Edit
+          </button>
           <button onClick={() => handleDownload(contextMenu.file)} className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-sm">
             <Download className="w-3 h-3" /> Download
           </button>
@@ -234,6 +333,19 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
             <Trash2 className="w-3 h-3" /> Delete
           </button>
         </div>
+      )}
+
+      {/* File Editor Modal */}
+      {editingFile && (
+        <FileEditor
+          fileName={editingFile.name}
+          filePath={editingFile.path}
+          initialContent={editingFile.content}
+          onSave={async (newContent) => {
+            await window.electron.sftpWriteFile(connectionId, editingFile.path, newContent);
+          }}
+          onClose={() => setEditingFile(null)}
+        />
       )}
     </div>
   );

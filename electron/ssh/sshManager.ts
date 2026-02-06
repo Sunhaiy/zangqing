@@ -163,6 +163,32 @@ export class SSHManager {
         }));
     }
 
+    async readFile(id: string, remotePath: string): Promise<string> {
+        return this.sftpOperation(id, (sftp) => new Promise((resolve, reject) => {
+            // Check size first to avoid crashing on huge files
+            sftp.stat(remotePath, (err: any, stats: any) => {
+                if (err) return reject(err);
+                if (stats.size > 10 * 1024 * 1024) return reject(new Error('File too large (>10MB)'));
+
+                let data = '';
+                const stream = sftp.createReadStream(remotePath);
+                stream.on('data', (chunk: Buffer) => data += chunk.toString());
+                stream.on('end', () => resolve(data));
+                stream.on('error', (err: any) => reject(err));
+            });
+        }));
+    }
+
+    async writeFile(id: string, remotePath: string, content: string): Promise<void> {
+        return this.sftpOperation(id, (sftp) => new Promise((resolve, reject) => {
+            const stream = sftp.createWriteStream(remotePath);
+            stream.on('finish', () => resolve(undefined));
+            stream.on('error', (err: any) => reject(err));
+            stream.write(content);
+            stream.end();
+        }));
+    }
+
     async getPwd(id: string): Promise<string> {
         const conn = this.connections.get(id);
         if (!conn) throw new Error('Not connected');
@@ -215,6 +241,99 @@ export class SSHManager {
             clearInterval(interval);
             this.intervals.delete(id);
         }
+    }
+
+    async getProcesses(id: string): Promise<any[]> {
+        const conn = this.connections.get(id);
+        if (!conn) throw new Error('Not connected');
+
+        return new Promise((resolve, reject) => {
+            // ps -ax -o pid,user,%cpu,%mem,comm,args --sort=-%cpu | head -n 50
+            const cmd = 'ps -ax -o pid,user,%cpu,%mem,comm,args --sort=-%cpu | head -n 50';
+            conn.exec(cmd, (err, stream) => {
+                if (err) return reject(err);
+                let output = '';
+                stream.on('data', (data: any) => output += data.toString());
+                stream.on('close', () => {
+                    const lines = output.trim().split('\n');
+                    // Skip header
+                    const processes = lines.slice(1).map(line => {
+                        const parts = line.trim().split(/\s+/);
+                        if (parts.length < 6) return null;
+
+                        // args can be multiple parts, join them back
+                        const args = parts.slice(5).join(' ');
+
+                        return {
+                            pid: parseInt(parts[0]),
+                            user: parts[1],
+                            cpu: parseFloat(parts[2]),
+                            mem: parseFloat(parts[3]),
+                            command: parts[4],
+                            args: args
+                        };
+                    }).filter(p => p !== null);
+                    resolve(processes);
+                });
+            });
+        });
+    }
+
+    async killProcess(id: string, pid: number): Promise<void> {
+        const conn = this.connections.get(id);
+        if (!conn) throw new Error('Not connected');
+
+        return new Promise((resolve, reject) => {
+            conn.exec(`kill -9 ${pid}`, (err, stream) => {
+                if (err) return reject(err);
+                stream.on('close', (code: any) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`Process exited with code ${code}`));
+                });
+            });
+        });
+    }
+
+    async getDockerContainers(id: string): Promise<any[]> {
+        const conn = this.connections.get(id);
+        if (!conn) throw new Error('Not connected');
+
+        return new Promise((resolve, reject) => {
+            // ID, Names, Image, Status, State
+            const cmd = 'docker ps -a --format "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}"';
+            conn.exec(cmd, (err, stream) => {
+                if (err) return reject(err);
+                let output = '';
+                stream.on('data', (data: any) => output += data.toString());
+                stream.on('close', () => {
+                    try {
+                        const containers = output.trim().split('\n').filter(line => line.trim()).map(line => {
+                            const [id, names, image, status, state] = line.split('|');
+                            return { id, name: names, image, status, state };
+                        });
+                        resolve(containers);
+                    } catch (e) {
+                        // docker might not be installed or permission denied
+                        resolve([]);
+                    }
+                });
+            });
+        });
+    }
+
+    async dockerAction(id: string, containerId: string, action: 'start' | 'stop' | 'restart'): Promise<void> {
+        const conn = this.connections.get(id);
+        if (!conn) throw new Error('Not connected');
+
+        return new Promise((resolve, reject) => {
+            conn.exec(`docker ${action} ${containerId}`, (err, stream) => {
+                if (err) return reject(err);
+                stream.on('close', (code: any) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`Docker action failed with code ${code}`));
+                });
+            });
+        });
     }
 
     private parseStats(output: string): SystemStats | null {

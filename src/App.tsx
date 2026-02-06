@@ -13,12 +13,28 @@ import { SessionTabs, Session } from './components/SessionTabs';
 import { ResizableLayout } from './components/ResizableLayout';
 import { useThemeStore } from './store/themeStore';
 import { useSettingsStore } from './store/settingsStore';
+import { RightPanel } from './components/RightPanel';
+
+interface AppSession {
+  uniqueId: string;
+  connection: SSHConnection;
+  status: 'connected' | 'disconnected';
+}
 
 function App() {
   const [page, setPage] = useState<'connections' | 'workspace' | 'settings'>('connections');
   // Multi-session state
-  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessions, setSessions] = useState<AppSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const cleanup = window.electron.onSSHStatus((_, { id, status }) => {
+      setSessions(prev => prev.map(s =>
+        s.uniqueId === id ? { ...s, status: status as 'connected' | 'disconnected' } : s
+      ));
+    });
+    return cleanup;
+  }, []);
 
   const initTheme = useThemeStore(state => state.initTheme);
   const { initSettings, fontFamily } = useSettingsStore();
@@ -38,7 +54,7 @@ function App() {
     const result = await window.electron.connectSSH({ ...connection, id: uniqueId }); // Use unique ID for this session
 
     if (result.success) {
-      const newSession: Session = { uniqueId, connection };
+      const newSession: AppSession = { uniqueId, connection, status: 'connected' };
       setSessions(prev => [...prev, newSession]);
       setActiveSessionId(uniqueId);
       setPage('workspace');
@@ -122,8 +138,8 @@ function App() {
                     }
                     rightContent={
                       <div className="h-full bg-card border-l border-border">
-                        <ErrorBoundary name="SystemMonitor">
-                          <SystemMonitor connectionId={session.uniqueId} />
+                        <ErrorBoundary name="RightPanel">
+                          <RightPanel connectionId={session.uniqueId} />
                         </ErrorBoundary>
                       </div>
                     }

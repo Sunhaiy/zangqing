@@ -48,9 +48,17 @@ export function setupIpcHandlers() {
   ipcMain.handle('sftp-mkdir', async (event, { id, path }) => {
     return sshManager.createFolder(id, path);
   });
-  
+
   ipcMain.handle('sftp-rename', async (event, { id, oldPath, newPath }) => {
     return sshManager.renameFile(id, oldPath, newPath);
+  });
+
+  ipcMain.handle('sftp-read-file', async (event, { id, path }) => {
+    return sshManager.readFile(id, path);
+  });
+
+  ipcMain.handle('sftp-write-file', async (event, { id, path, content }) => {
+    return sshManager.writeFile(id, path, content);
   });
 
   ipcMain.handle('get-pwd', async (event, id) => {
@@ -58,13 +66,13 @@ export function setupIpcHandlers() {
   });
 
   ipcMain.handle('dialog-open', async () => {
-      const result = await dialog.showOpenDialog({ properties: ['openFile'] });
-      return result.filePaths[0];
+    const result = await dialog.showOpenDialog({ properties: ['openFile'] });
+    return result.filePaths[0];
   });
 
   ipcMain.handle('dialog-save', async (event, defaultName) => {
-      const result = await dialog.showSaveDialog({ defaultPath: defaultName });
-      return result.filePath;
+    const result = await dialog.showSaveDialog({ defaultPath: defaultName });
+    return result.filePath;
   });
 
   ipcMain.on('start-monitoring', (event, id) => {
@@ -73,6 +81,22 @@ export function setupIpcHandlers() {
 
   ipcMain.on('stop-monitoring', (event, id) => {
     sshManager.stopMonitoring(id);
+  });
+
+  ipcMain.handle('get-processes', async (event, id) => {
+    return sshManager.getProcesses(id);
+  });
+
+  ipcMain.handle('kill-process', async (event, { id, pid }) => {
+    return sshManager.killProcess(id, pid);
+  });
+
+  ipcMain.handle('docker-list', async (event, id) => {
+    return sshManager.getDockerContainers(id);
+  });
+
+  ipcMain.handle('docker-action', async (event, { id, containerId, action }) => {
+    return sshManager.dockerAction(id, containerId, action);
   });
 
   // Window Controls

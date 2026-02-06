@@ -8,7 +8,7 @@ export interface Session {
 }
 
 interface SessionTabsProps {
-    sessions: Session[];
+    sessions: { uniqueId: string; connection: SSHConnection; status: 'connected' | 'disconnected' }[];
     activeId: string | null;
     onSwitch: (id: string) => void;
     onClose: (id: string, e: React.MouseEvent) => void;
@@ -27,10 +27,11 @@ export function SessionTabs({ sessions, activeId, onSwitch, onClose, onNew }: Se
                             "group relative flex items-center h-10 px-3 min-w-[150px] max-w-[200px] border-r border-border/50 cursor-pointer transition-colors text-sm",
                             activeId === session.uniqueId
                                 ? "bg-background font-medium text-primary border-t-2 border-t-primary"
-                                : "hover:bg-background/50 text-muted-foreground border-t-2 border-t-transparent"
+                                : "hover:bg-background/50 text-muted-foreground border-t-2 border-t-transparent",
+                            session.status === 'disconnected' && "opacity-60 grayscale"
                         )}
                     >
-                        <Terminal className="w-3.5 h-3.5 mr-2 opacity-70" />
+                        <div className={cn("w-2 h-2 rounded-full mr-2", session.status === 'connected' ? "bg-green-500" : "bg-red-500")} />
                         <span className="truncate flex-1" title={session.connection.name}>
                             {session.connection.name}
                         </span>
