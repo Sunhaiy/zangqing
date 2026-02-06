@@ -8,9 +8,28 @@ export const translations = {
                 themeDesc: 'Select a theme to customize the look and feel of the application.',
                 language: 'Language',
                 languageDesc: 'Select your preferred language.',
-                font: 'Font Family',
-                fontDesc: 'Choose the font for the UI and Terminal.',
-                fontPlaceholder: 'Select a font'
+                font: 'Font Family', // Keep for backwards compatibility if needed, or deprecate
+                fontDesc: 'Choose the font for the UI and Terminal.', // Keep for backwards compatibility
+                fontPlaceholder: 'Select a font' // Keep for backwards compatibility
+            },
+            terminal: {
+                title: 'Terminal Settings',
+                fontFamily: 'Font Family',
+                fontFamilyDesc: 'Choose the font for the terminal interface.',
+                fontSize: 'Font Size',
+                lineHeight: 'Line Height',
+                letterSpacing: 'Letter Spacing',
+                cursorStyle: 'Cursor Style',
+                cursorBlink: 'Cursor Blink',
+                rendering: 'Rendering',
+                rendererType: 'Frontend Implementation',
+                rendererTypeDesc: 'Switch between canvas (stable) and webgl (fast, experimental).',
+                scrollback: 'Scrollback Buffer',
+                scrollbackDesc: 'Lines to keep in history.',
+                brightBold: 'Bright Bold Text',
+                brightBoldDesc: 'Render bold text in bright colors.',
+                sound: 'Sound',
+                bellStyle: 'Terminal Bell'
             },
             about: {
                 title: 'About',
@@ -49,6 +68,25 @@ export const translations = {
                 fontDesc: '选择界面和终端的字体。',
                 fontPlaceholder: '选择字体'
             },
+            terminal: {
+                title: '终端设置',
+                fontFamily: '字体',
+                fontFamilyDesc: '选择终端界面的字体。',
+                fontSize: '字体大小',
+                lineHeight: '行高',
+                letterSpacing: '字符间距',
+                cursorStyle: '光标样式',
+                cursorBlink: '光标闪烁',
+                rendering: '渲染',
+                rendererType: '前端实现',
+                rendererTypeDesc: '在 Canvas（稳定）和 WebGL（快速，实验性）之间切换。',
+                scrollback: '回滚缓冲区',
+                scrollbackDesc: '保留的历史行数。',
+                brightBold: '高亮粗体文本',
+                brightBoldDesc: '以高亮颜色渲染粗体文本。',
+                sound: '声音',
+                bellStyle: '终端铃声'
+            },
             about: {
                 title: '关于',
                 desc: 'SSH Tool v1.0.0\n基于 Electron, React, 和 Shadcn UI 构建。'
@@ -86,6 +124,25 @@ export const translations = {
                 fontDesc: 'UIとターミナルのフォントを選択してください。',
                 fontPlaceholder: 'フォントを選択'
             },
+            terminal: {
+                title: 'ターミナル設定',
+                fontFamily: 'フォント',
+                fontFamilyDesc: 'ターミナルのフォントを選択してください。',
+                fontSize: 'フォントサイズ',
+                lineHeight: '行の高さ',
+                letterSpacing: '文字間隔',
+                cursorStyle: 'カーソルスタイル',
+                cursorBlink: 'カーソル点滅',
+                rendering: 'レンダリング',
+                rendererType: 'フロントエンド実装',
+                rendererTypeDesc: 'Canvas（安定）と WebGL（高速、実験的）を切り替えます。',
+                scrollback: 'スクロールバックバッファ',
+                scrollbackDesc: '履歴に保持する行数。',
+                brightBold: '明るい太字テキスト',
+                brightBoldDesc: '太字テキストを明るい色でレンダリングします。',
+                sound: 'サウンド',
+                bellStyle: 'ターミナルベル'
+            },
             about: {
                 title: '詳細',
                 desc: 'SSH Tool v1.0.0\nElectron, React, Shadcn UI を使用しています。'
@@ -122,6 +179,25 @@ export const translations = {
                 font: '글꼴',
                 fontDesc: 'UI 및 터미널의 글꼴을 선택하세요.',
                 fontPlaceholder: '글꼴 선택'
+            },
+            terminal: {
+                title: '터미널 설정',
+                fontFamily: '글꼴',
+                fontFamilyDesc: '터미널 인터페이스의 글꼴을 선택하세요.',
+                fontSize: '글꼴 크기',
+                lineHeight: '줄 높이',
+                letterSpacing: '자간',
+                cursorStyle: '커서 스타일',
+                cursorBlink: '커서 깜박임',
+                rendering: '렌더링',
+                rendererType: '프론트엔드 구현',
+                rendererTypeDesc: 'Canvas(안정)와 WebGL(빠름, 실험적) 간 전환.',
+                scrollback: '스크롤백 버퍼',
+                scrollbackDesc: '기록에 유지할 줄 수.',
+                brightBold: '밝은 굵은 텍스트',
+                brightBoldDesc: '굵은 텍스트를 밝은 색상으로 렌더링합니다.',
+                sound: '소리',
+                bellStyle: '터미널 벨'
             },
             about: {
                 title: '정보',

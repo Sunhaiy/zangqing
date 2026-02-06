@@ -37,7 +37,7 @@ function App() {
   }, []);
 
   const initTheme = useThemeStore(state => state.initTheme);
-  const { initSettings, fontFamily } = useSettingsStore();
+  const { initSettings, uiFontFamily } = useSettingsStore();
 
   useEffect(() => {
     initTheme();
@@ -45,8 +45,8 @@ function App() {
   }, [initTheme, initSettings]);
 
   useEffect(() => {
-    document.body.style.fontFamily = fontFamily;
-  }, [fontFamily]);
+    document.body.style.fontFamily = uiFontFamily;
+  }, [uiFontFamily]);
 
   const handleConnect = async (connection: SSHConnection) => {
     // Create new session
@@ -82,22 +82,39 @@ function App() {
     });
   };
 
+  const handleCloseAllSessions = () => {
+    if (sessions.length === 0) return;
+    if (confirm('Are you sure you want to close all active sessions?')) {
+      setSessions([]);
+      setActiveSessionId(null);
+      setPage('connections');
+    }
+  };
+
   const activeSession = sessions.find(s => s.uniqueId === activeSessionId);
 
+  console.log('App rendering, page:', page, 'sessions:', sessions.length);
+
   return (
-    <div className="h-screen w-screen flex flex-col text-foreground overflow-hidden border border-border">
+    <div className="h-screen w-screen flex flex-col text-foreground overflow-hidden border border-border bg-background">
       <TitleBar />
 
       <div className="flex-1 overflow-hidden relative flex flex-col">
         {page === 'connections' && (
-          <ConnectionManager
-            onConnect={handleConnect}
-            onNavigate={setPage}
-          />
+          <div className="absolute inset-0 z-50 bg-background">
+            <ErrorBoundary name="ConnectionManager">
+              <ConnectionManager
+                onConnect={handleConnect}
+                onNavigate={setPage}
+              />
+            </ErrorBoundary>
+          </div>
         )}
 
         {page === 'settings' && (
-          <Settings onBack={() => setPage(sessions.length > 0 ? 'workspace' : 'connections')} />
+          <div className="absolute inset-0 z-50 bg-background">
+            <Settings onBack={() => setPage(sessions.length > 0 ? 'workspace' : 'connections')} />
+          </div>
         )}
 
         {page === 'workspace' && (
@@ -108,6 +125,7 @@ function App() {
               onSwitch={setActiveSessionId}
               onClose={handleCloseSession}
               onNew={() => setPage('connections')}
+              onCloseAll={handleCloseAllSessions}
             />
 
             <div className="flex-1 relative overflow-hidden">

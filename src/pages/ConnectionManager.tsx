@@ -24,8 +24,17 @@ export function ConnectionManager({ onConnect, onNavigate }: ConnectionManagerPr
   }, []);
 
   const loadConnections = async () => {
-    const stored = await window.electron.storeGet('connections');
-    if (stored) setConnections(stored);
+    try {
+      if (!window.electron) {
+        console.error('Electron API not found');
+        return;
+      }
+      const stored = await window.electron.storeGet('connections');
+      if (stored) setConnections(stored);
+    } catch (err) {
+      console.error('Failed to load connections:', err);
+      alert('Failed to load connections: ' + err);
+    }
   };
 
   const handleSave = async (data: SSHConnection) => {
@@ -67,7 +76,7 @@ export function ConnectionManager({ onConnect, onNavigate }: ConnectionManagerPr
   };
 
   return (
-    <div className="flex flex-col h-full p-6">
+    <div className="flex flex-col h-full p-6 bg-background">
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-3xl font-bold tracking-tight">SSH Tool</h1>
         <Button variant="outline" size="icon" onClick={() => onNavigate('settings')}>

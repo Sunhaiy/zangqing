@@ -1,18 +1,23 @@
 import { create } from 'zustand';
-import { Theme, ThemeId, themes } from '../shared/themes';
+import { Theme, ThemeId, themes, TerminalTheme, TerminalThemeId, terminalThemes } from '../shared/themes';
 
 interface ThemeState {
   currentThemeId: ThemeId;
+  currentTerminalThemeId: TerminalThemeId;
   theme: Theme;
+  terminalTheme: TerminalTheme;
   opacity: number;
   setTheme: (id: ThemeId) => void;
+  setTerminalTheme: (id: TerminalThemeId) => void;
   setOpacity: (opacity: number) => void;
   initTheme: () => Promise<void>;
 }
 
 export const useThemeStore = create<ThemeState>((set, get) => ({
   currentThemeId: 'dark',
+  currentTerminalThemeId: 'default',
   theme: themes['dark'],
+  terminalTheme: terminalThemes['default'],
   opacity: 0.9,
 
   setTheme: (id: ThemeId) => {
@@ -38,6 +43,12 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     (window as any).electron.storeSet('theme', id);
   },
 
+  setTerminalTheme: (id: TerminalThemeId) => {
+    const terminalTheme = terminalThemes[id];
+    set({ currentTerminalThemeId: id, terminalTheme });
+    (window as any).electron.storeSet('terminalTheme', id);
+  },
+
   setOpacity: (opacity: number) => {
     set({ opacity });
     const root = document.getElementById('root');
@@ -49,6 +60,7 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
 
   initTheme: async () => {
     const savedThemeId = await (window as any).electron.storeGet('theme');
+    const savedTerminalThemeId = await (window as any).electron.storeGet('terminalTheme');
     const savedOpacity = await (window as any).electron.storeGet('opacity');
 
     if (savedOpacity) {
@@ -69,6 +81,13 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     } else {
       // Default to dark
       get().setTheme('dark');
+    }
+
+    if (savedTerminalThemeId && terminalThemes[savedTerminalThemeId as TerminalThemeId]) {
+      get().setTerminalTheme(savedTerminalThemeId as TerminalThemeId);
+    } else {
+      // Use default terminal theme
+      get().setTerminalTheme('default');
     }
   }
 }));
