@@ -99,6 +99,19 @@ export function setupIpcHandlers() {
     return sshManager.dockerAction(id, containerId, action);
   });
 
+  // Tunnels
+  ipcMain.handle('tunnel-add', async (event, { id, type, config }) => {
+    return sshManager.addTunnel(id, type, config);
+  });
+
+  ipcMain.handle('tunnel-remove', async (event, { id, tunnelId }) => {
+    return sshManager.removeTunnel(id, tunnelId);
+  });
+
+  ipcMain.handle('tunnel-list', async (event, id) => {
+    return sshManager.getTunnels(id);
+  });
+
   // Window Controls
   ipcMain.on('window-minimize', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);

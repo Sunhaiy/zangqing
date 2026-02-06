@@ -22,6 +22,8 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   const [pathCache, setPathCache] = useState<Record<string, FileEntry[]>>({});
   const [inputPath, setInputPath] = useState('.');
   const [bookmarks, setBookmarks] = useState<string[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ file: string, percent: number } | null>(null);
 
   useEffect(() => {
     // Load bookmarks
@@ -44,7 +46,6 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
       setFiles(pathCache[path]);
       setCurrentPath(path);
       setInputPath(path);
-      // We can still fetch in background if needed, but for now trust cache unless forced
       return;
     }
 
@@ -54,7 +55,6 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
       if (path === '.') {
         const pwd = await window.electron.getPwd(connectionId);
         path = pwd;
-        // Check cache again with resolved path
         if (!force && pathCache[path]) {
           setFiles(pathCache[path]);
           setCurrentPath(path);
@@ -94,8 +94,39 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
     }
   };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    for (const file of files) {
+      const filePath = (file as any).path;
+      if (!filePath) continue;
+
+      setUploadProgress({ file: file.name, percent: 0 });
+      try {
+        await window.electron.sftpUpload(connectionId, filePath, currentPath + '/' + file.name);
+      } catch (err: any) {
+        alert(`Failed to upload ${file.name}: ${err.message}`);
+      }
+    }
+    setUploadProgress(null);
+    loadFiles(currentPath, true);
+  };
+
   useEffect(() => {
-    // Reset cache when connection changes
     setPathCache({});
     loadFiles('.', true);
 
@@ -141,7 +172,6 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
     if (name) {
       setLoading(true);
       try {
-        // Fix: mkdir usually requires full path. currentPath is absolute.
         const newPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
         await window.electron.sftpMkdir(connectionId, newPath);
         loadFiles(currentPath, true);
@@ -207,7 +237,31 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   };
 
   return (
-    <div className="flex flex-col h-full bg-background border-r border-border text-foreground">
+    <div
+      className="flex flex-col h-full bg-background border-r border-border text-foreground relative"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-primary/20 border-2 border-dashed border-primary flex items-center justify-center pointer-events-none backdrop-blur-[1px]">
+          <div className="bg-background/80 p-4 rounded-lg shadow-lg flex flex-col items-center animate-bounce">
+            <Upload className="w-8 h-8 text-primary mb-2" />
+            <span className="font-bold text-primary">Drop files to upload</span>
+          </div>
+        </div>
+      )}
+
+      {uploadProgress && (
+        <div className="absolute bottom-4 right-4 z-50 bg-card border border-border shadow-lg p-3 rounded-lg flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2">
+          <RefreshCw className="w-4 h-4 text-primary animate-spin" />
+          <div className="text-sm">
+            <div className="font-medium">Uploading...</div>
+            <div className="text-xs text-muted-foreground">{uploadProgress.file}</div>
+          </div>
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="p-2 border-b border-border flex items-center gap-2 bg-card">
         <button onClick={handleUp} className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="Up">
@@ -235,7 +289,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
           </button>
         </div>
 
-        {/* Bookmarks Dropdown Trigger (Simple popover logic needed or just a list in a modal, I'll use a simple dropdown approach) */}
+        {/* Bookmarks Dropdown Trigger */}
         <div className="relative group">
           <button className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="Bookmarks">
             <Bookmark className="w-4 h-4" />
@@ -314,7 +368,6 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
             {contextMenu.file.name}
           </div>
           <button onClick={() => {
-            // Trigger edit if it's a file
             if (contextMenu.file.type === '-') {
               const path = currentPath === '/' ? `/${contextMenu.file.name}` : `${currentPath}/${contextMenu.file.name}`;
               handleFileOpen(contextMenu.file, path);
