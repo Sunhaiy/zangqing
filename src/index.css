@@ -40,6 +40,9 @@
     /* Primary color for ring */
 
     --radius: 0.5rem;
+
+    /* Layout Spacing */
+    --panel-gap: 6px;
   }
 
   .dark {
@@ -82,6 +85,9 @@
     --border: 0 0% 14.9%;
     --input: 0 0% 14.9%;
     --ring: 161 84% 39%;
+
+    /* Layout Spacing */
+    --panel-gap: 6px;
   }
 }
 
@@ -130,4 +136,11 @@
 .xterm-viewport,
 .xterm-screen {
   background-color: transparent !important;
+}
+
+/* Remove focus outlines on buttons globally */
+button:focus,
+button:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }

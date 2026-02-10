@@ -62,6 +62,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
 
   // Responsive State using ResizeObserver
   const containerRef = useRef<HTMLDivElement>(null);
+  const bookmarkBtnRef = useRef<HTMLButtonElement>(null);
   const [isCompact, setIsCompact] = useState(false);
 
   useEffect(() => {
@@ -399,7 +400,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
 
     const segments = currentPath.split('/').filter(Boolean);
     const breadcrumbItems = [
-      { name: '根目录', path: '/' },
+      { name: '/', path: '/' },
       ...segments.map((segment, index) => ({
         name: segment,
         path: '/' + segments.slice(0, index + 1).join('/')
@@ -466,93 +467,101 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
         </div>
       )}
 
-      {/* Modern Toolbar */}
-      <div className="h-10 border-b border-border flex items-center gap-2 px-3 bg-transparent">
-        <div className="flex items-center gap-1">
-          <button onClick={handleUp} className="p-1.5 hover:bg-accent hover:text-accent-foreground rounded-md text-muted-foreground transition-colors" title="向上一级">
-            <ArrowUp className="w-4 h-4" />
+      {/* Toolbar */}
+      <div className="border-b border-border flex flex-col bg-transparent">
+        {/* Row 1: Navigation + Actions */}
+        <div className="h-9 flex items-center gap-1.5 px-2">
+          <button onClick={handleUp} className="p-1.5 hover:bg-accent hover:text-accent-foreground rounded-md text-muted-foreground transition-colors focus:outline-none" title="向上一级">
+            <ArrowUp className="w-3.5 h-3.5" />
           </button>
-          <button onClick={() => loadFiles(currentPath, true)} className="p-1.5 hover:bg-accent hover:text-accent-foreground rounded-md text-muted-foreground transition-colors" title="刷新">
-            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+          <button onClick={() => loadFiles(currentPath, true)} className="p-1.5 hover:bg-accent hover:text-accent-foreground rounded-md text-muted-foreground transition-colors focus:outline-none" title="刷新">
+            <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
           </button>
-          <button onClick={() => loadFiles('/')} className="p-1.5 hover:bg-accent hover:text-accent-foreground rounded-md text-muted-foreground transition-colors" title="回到根目录">
-            <div className="w-4 h-4 flex items-center justify-center font-bold text-xs">~</div>
+          <button onClick={() => loadFiles('/')} className="p-1.5 hover:bg-accent hover:text-accent-foreground rounded-md text-muted-foreground transition-colors focus:outline-none" title="回到根目录">
+            <div className="w-3.5 h-3.5 flex items-center justify-center font-bold text-[10px]">~</div>
           </button>
-        </div>
-
-        <div className="w-px h-4 bg-border mx-1"></div>
-
-        <Breadcrumbs />
-
-        <div className="flex items-center gap-1">
+          <div className="w-px h-4 bg-border mx-0.5"></div>
           <button
             onClick={() => toggleBookmark(currentPath)}
-            className={cn("p-1.5 rounded-md transition-colors", bookmarks.includes(currentPath) ? 'text-yellow-500 hover:bg-yellow-500/10' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground')}
+            className={cn("p-1.5 rounded-md transition-colors focus:outline-none", bookmarks.includes(currentPath) ? 'text-yellow-500 hover:bg-yellow-500/10' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground')}
             title="添加到书签"
           >
-            <Star className={cn("w-4 h-4", bookmarks.includes(currentPath) && "fill-current")} />
+            <Star className={cn("w-3.5 h-3.5", bookmarks.includes(currentPath) && "fill-current")} />
           </button>
-
-          {/* Bookmarks Dropdown */}
           <div className="relative">
             <button
-              className={cn("p-1.5 rounded-md transition-colors", showBookmarks ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground')}
+              ref={bookmarkBtnRef}
+              className={cn("p-1.5 rounded-md transition-colors focus:outline-none", showBookmarks ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground')}
               title="书签"
               onClick={() => setShowBookmarks(!showBookmarks)}
             >
-              <Bookmark className="w-4 h-4" />
+              <Bookmark className="w-3.5 h-3.5" />
             </button>
             {showBookmarks && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setShowBookmarks(false)} />
-                <div className="absolute right-0 top-full mt-1 w-56 bg-popover border border-border rounded-lg shadow-xl z-50 py-1 animate-in fade-in zoom-in-95 data-[side=bottom]:slide-in-from-top-2">
-                  <div className="px-3 py-2 text-xs font-semibold text-muted-foreground border-b border-border mb-1">
-                    收藏夹
-                  </div>
-                  {bookmarks.length === 0 ? (
-                    <div className="px-3 py-4 text-center text-xs text-muted-foreground italic">暂无书签</div>
-                  ) : (
-                    bookmarks.map(path => (
-                      <div
-                        key={path}
-                        className="px-3 py-2 hover:bg-accent hover:text-accent-foreground cursor-pointer text-xs flex justify-between items-center group/item mx-1 rounded-md transition-colors"
-                        onClick={() => {
-                          loadFiles(path);
-                          setShowBookmarks(false);
-                        }}
-                      >
-                        <div className="flex items-center gap-2 truncate flex-1">
-                          <Folder className="w-3.5 h-3.5 text-blue-400 fill-blue-400/20" />
-                          <span className="truncate" title={path}>{path}</span>
-                        </div>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); toggleBookmark(path); }}
-                          className="text-muted-foreground hover:text-destructive opacity-0 group-hover/item:opacity-100 transition-opacity p-0.5 rounded"
+                {createPortal(
+                  <div
+                    className="fixed w-56 bg-popover border border-border rounded-lg shadow-xl z-50 py-1 animate-in fade-in zoom-in-95"
+                    style={(() => {
+                      const rect = bookmarkBtnRef.current?.getBoundingClientRect();
+                      if (!rect) return { top: 40, left: 10 };
+                      return { top: rect.bottom + 4, left: Math.max(4, rect.right - 224) };
+                    })()}
+                  >
+                    <div className="px-3 py-2 text-xs font-semibold text-muted-foreground border-b border-border mb-1">
+                      收藏夹
+                    </div>
+                    {bookmarks.length === 0 ? (
+                      <div className="px-3 py-4 text-center text-xs text-muted-foreground italic">暂无书签</div>
+                    ) : (
+                      bookmarks.map(path => (
+                        <div
+                          key={path}
+                          className="px-3 py-2 hover:bg-accent hover:text-accent-foreground cursor-pointer text-xs flex justify-between items-center group/item mx-1 rounded-md transition-colors"
+                          onClick={() => {
+                            loadFiles(path);
+                            setShowBookmarks(false);
+                          }}
                         >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
+                          <div className="flex items-center gap-2 truncate flex-1">
+                            <Folder className="w-3.5 h-3.5 text-blue-400 fill-blue-400/20" />
+                            <span className="truncate" title={path}>{path}</span>
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleBookmark(path); }}
+                            className="text-muted-foreground hover:text-destructive opacity-0 group-hover/item:opacity-100 transition-opacity p-0.5 rounded focus:outline-none"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>,
+                  document.body
+                )}
               </>
             )}
           </div>
         </div>
+        {/* Row 2: Breadcrumb Path */}
+        <div className="h-8 flex items-center px-2 border-t border-border/30">
+          <Breadcrumbs />
+        </div>
       </div>
 
       {/* File List Header */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-border/50 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/10">
+      <div className="flex items-center px-3 py-1.5 border-b border-border/50 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/10">
         <div className="w-6 flex justify-center shrink-0">#</div>
         <div
-          className="flex-1 min-w-0 flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors"
+          className="flex-1 min-w-0 flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors pl-1"
           onClick={() => toggleSort('name')}
         >
           名称 <SortIcon field="name" />
         </div>
         {!isCompact && (
           <div
-            className="w-32 shrink-0 flex items-center gap-1 cursor-pointer hover:text-foreground justify-end transition-colors"
+            className="w-28 shrink-0 flex items-center gap-1 cursor-pointer hover:text-foreground justify-end transition-colors"
             onClick={() => toggleSort('date')}
           >
             日期 <SortIcon field="date" />
@@ -560,7 +569,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
         )}
         {!isCompact && (
           <div
-            className="w-20 shrink-0 flex items-center gap-1 cursor-pointer hover:text-foreground justify-end transition-colors"
+            className="w-14 shrink-0 flex items-center gap-1 cursor-pointer hover:text-foreground justify-end transition-colors"
             onClick={() => toggleSort('size')}
           >
             大小 <SortIcon field="size" />
@@ -583,7 +592,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
             sortedAndFilteredFiles.map((file, i) => (
               <div
                 key={i}
-                className="flex items-center gap-2 px-4 py-1.5 cursor-pointer text-xs group transition-all border-b border-transparent hover:bg-accent/50 hover:border-border/30"
+                className="flex items-center px-3 py-1.5 cursor-pointer text-xs group transition-all border-b border-transparent hover:bg-accent/50 hover:border-border/30"
                 onClick={() => file.type === 'd' ? handleNavigate(file) : null}
                 onDoubleClick={() => {
                   if (file.type === '-') {
@@ -601,18 +610,18 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
                   )}
                 </div>
 
-                <div className="flex-1 min-w-0 flex items-center">
+                <div className="flex-1 min-w-0 flex items-center pl-1">
                   <span className="truncate text-foreground/90 font-medium group-hover:text-foreground">{file.name}</span>
                 </div>
 
                 {!isCompact && (
-                  <div className="w-32 shrink-0 text-right text-muted-foreground/60 font-mono text-[10px] tabular-nums">
+                  <div className="w-28 shrink-0 text-right text-muted-foreground/60 font-mono text-[10px] tabular-nums">
                     {file.date ? format(new Date(file.date), 'yyyy-MM-dd HH:mm') : '-'}
                   </div>
                 )}
 
                 {!isCompact && (
-                  <div className="w-20 shrink-0 text-right text-muted-foreground/60 font-mono text-[10px] tabular-nums">
+                  <div className="w-14 shrink-0 text-right text-muted-foreground/60 font-mono text-[10px] tabular-nums">
                     {file.type === 'd' ? '-' : formatSize(file.size)}
                   </div>
                 )}

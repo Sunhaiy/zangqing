@@ -77,7 +77,7 @@ export function ResizableLayout({
     return (
         <div ref={layoutRef} className="flex h-full w-full overflow-hidden">
             {/* Left Panel */}
-            <div style={{ width: leftWidth }} className="flex-shrink-0 flex flex-col min-w-0">
+            <div style={{ width: leftWidth, padding: 'var(--panel-gap)' }} className="flex-shrink-0 flex flex-col min-w-0 overflow-hidden">
                 {leftContent}
             </div>
 
@@ -88,7 +88,7 @@ export function ResizableLayout({
             />
 
             {/* Middle Panel (Flexible) */}
-            <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
+            <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden" style={{ padding: 'var(--panel-gap)' }}>
                 {middleContent}
             </div>
 
@@ -99,7 +99,7 @@ export function ResizableLayout({
             />
 
             {/* Right Panel */}
-            <div style={{ width: rightWidth }} className="flex-shrink-0 flex flex-col min-w-0 border-l border-border">
+            <div style={{ width: rightWidth, padding: 'var(--panel-gap)' }} className="flex-shrink-0 flex flex-col min-w-0 border-l border-border overflow-hidden">
                 {rightContent}
             </div>
         </div>
