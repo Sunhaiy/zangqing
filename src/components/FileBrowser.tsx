@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { FileEntry } from '../shared/types';
 import {
@@ -9,6 +9,13 @@ import { FileEditor } from './FileEditor';
 import { cn } from '../lib/utils';
 import { format } from 'date-fns';
 import { useSettingsStore } from '../store/settingsStore';
+
+// Add global declaration for electron
+declare global {
+  interface Window {
+    electron: any;
+  }
+}
 
 interface FileBrowserProps {
   connectionId: string;
@@ -52,6 +59,27 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
 
   // Use Settings Store for bookmarks
   const { bookmarks, toggleBookmark } = useSettingsStore();
+
+  // Responsive State using ResizeObserver
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isCompact, setIsCompact] = useState(false);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        // Toggle compact mode if width is less than 500px (adjust threshold as needed)
+        setIsCompact(entry.contentRect.width < 500);
+      }
+    });
+
+    resizeObserver.observe(containerRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
 
   const loadFiles = async (path: string, force = false) => {
     if (!force && pathCache[path]) {
@@ -99,7 +127,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
         content: content
       });
     } catch (err) {
-      alert('Cannot open file: ' + err);
+      alert('无法打开文件: ' + err);
     } finally {
       setLoading(false);
     }
@@ -130,7 +158,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
       try {
         await window.electron.sftpUpload(connectionId, filePath, currentPath + '/' + file.name);
       } catch (err: any) {
-        alert(`Failed to upload ${file.name}: ${err.message}`);
+        alert(`上传失败 ${file.name}: ${err.message}`);
       }
     }
     setUploadProgress(null);
@@ -171,7 +199,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
         await window.electron.sftpUpload(connectionId, localPath, remotePath);
         loadFiles(currentPath, true);
       } catch (e) {
-        alert('Upload failed: ' + e);
+        alert('上传失败: ' + e);
       } finally {
         setLoading(false);
       }
@@ -181,8 +209,8 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   const handleCreateFolder = async () => {
     setContextMenu(null);
     setInputDialog({
-      title: 'New Folder',
-      message: 'Enter folder name:',
+      title: '新建文件夹',
+      message: '请输入文件夹名称:',
       defaultValue: '',
       onConfirm: async (name) => {
         setLoading(true);
@@ -191,7 +219,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
           await window.electron.sftpMkdir(connectionId, newPath);
           await loadFiles(currentPath, true);
         } catch (e) {
-          alert('Create folder failed: ' + e);
+          alert('创建文件夹失败: ' + e);
         } finally {
           setLoading(false);
         }
@@ -202,8 +230,8 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   const handleCreateFile = async () => {
     setContextMenu(null);
     setInputDialog({
-      title: 'New File',
-      message: 'Enter file name:',
+      title: '新建文件',
+      message: '请输入文件名称:',
       defaultValue: '',
       onConfirm: async (name) => {
         setLoading(true);
@@ -212,7 +240,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
           await window.electron.sftpWriteFile(connectionId, newPath, '');
           await loadFiles(currentPath, true);
         } catch (e) {
-          alert('Create file failed: ' + e);
+          alert('创建文件失败: ' + e);
         } finally {
           setLoading(false);
         }
@@ -221,14 +249,14 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   };
 
   const handleDelete = async (file: FileEntry) => {
-    if (confirm(`Delete ${file.name}?`)) {
+    if (confirm(`确定要删除 ${file.name} 吗?`)) {
       setLoading(true);
       try {
         const path = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
         await window.electron.sftpDelete(connectionId, path);
         loadFiles(currentPath, true);
       } catch (e) {
-        alert('Delete failed: ' + e);
+        alert('删除失败: ' + e);
       } finally {
         setLoading(false);
       }
@@ -242,9 +270,9 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
       try {
         const remotePath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
         await window.electron.sftpDownload(connectionId, remotePath, localPath);
-        alert('Download complete');
+        alert('下载完成');
       } catch (e) {
-        alert('Download failed: ' + e);
+        alert('下载失败: ' + e);
       } finally {
         setLoading(false);
       }
@@ -254,8 +282,8 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
   const handleRename = async (file: FileEntry) => {
     setContextMenu(null);
     setInputDialog({
-      title: 'Rename',
-      message: `Enter new name for ${file.name}:`,
+      title: '重命名',
+      message: `请输入 ${file.name} 的新名称:`,
       defaultValue: file.name,
       onConfirm: async (newName) => {
         if (newName && newName !== file.name) {
@@ -266,7 +294,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
             await window.electron.sftpRename(connectionId, oldPath, newPath);
             await loadFiles(currentPath, true);
           } catch (e) {
-            alert('Rename failed: ' + e);
+            alert('重命名失败: ' + e);
           } finally {
             setLoading(false);
           }
@@ -327,9 +355,94 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
     return sortOrder === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />;
   };
 
+  // Breadcrumb Component
+  const Breadcrumbs = () => {
+    const [isEditing, setIsEditing] = useState(false);
+    const [editValue, setEditValue] = useState(inputPath);
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+      if (isEditing && inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.select();
+      }
+    }, [isEditing]);
+
+    useEffect(() => {
+      setEditValue(currentPath);
+    }, [currentPath]);
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        loadFiles(editValue);
+        setIsEditing(false);
+      } else if (e.key === 'Escape') {
+        setIsEditing(false);
+        setEditValue(currentPath);
+      }
+    };
+
+    if (isEditing) {
+      return (
+        <div className="flex-1 h-7 bg-muted/30 border border-primary/30 rounded flex items-center px-2">
+          <input
+            ref={inputRef}
+            className="flex-1 bg-transparent border-none outline-none text-xs font-mono"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onBlur={() => setIsEditing(false)}
+          />
+        </div>
+      );
+    }
+
+    const segments = currentPath.split('/').filter(Boolean);
+    const breadcrumbItems = [
+      { name: '根目录', path: '/' },
+      ...segments.map((segment, index) => ({
+        name: segment,
+        path: '/' + segments.slice(0, index + 1).join('/')
+      }))
+    ];
+
+    return (
+      <div
+        className="flex-1 flex items-center gap-0.5 overflow-hidden h-7 px-1 rounded hover:bg-muted/30 cursor-text transition-colors"
+        onClick={() => setIsEditing(true)}
+      >
+        <div className="flex items-center text-xs text-muted-foreground whitespace-nowrap overflow-x-auto no-scrollbar mask-gradient-right">
+          {breadcrumbItems.map((item, index) => (
+            <div key={item.path} className="flex items-center">
+              {index > 0 && <span className="mx-0.5 opacity-50">/</span>}
+              <span
+                className="hover:text-foreground hover:bg-muted/50 px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  loadFiles(item.path);
+                }}
+              >
+                {item.name}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const formatSize = (bytes: number) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
   return (
     <div
-      className="flex flex-col h-full bg-transparent border-r border-border text-foreground relative"
+      ref={containerRef}
+      className="flex flex-col h-full bg-transparent border-r border-border text-foreground relative select-none overflow-hidden min-w-0"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -338,7 +451,7 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
         <div className="absolute inset-0 z-50 bg-primary/20 border-2 border-dashed border-primary flex items-center justify-center pointer-events-none backdrop-blur-[1px]">
           <div className="bg-background/80 p-4 rounded-lg shadow-lg flex flex-col items-center animate-bounce">
             <Upload className="w-8 h-8 text-primary mb-2" />
-            <span className="font-bold text-primary">Drop files to upload</span>
+            <span className="font-bold text-primary">拖放文件上传</span>
           </div>
         </div>
       )}
@@ -347,293 +460,327 @@ export function FileBrowser({ connectionId }: FileBrowserProps) {
         <div className="absolute bottom-4 right-4 z-50 bg-card border border-border shadow-lg p-3 rounded-lg flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2">
           <RefreshCw className="w-4 h-4 text-primary animate-spin" />
           <div className="text-sm">
-            <div className="font-medium">Uploading...</div>
+            <div className="font-medium">正在上传...</div>
             <div className="text-xs text-muted-foreground">{uploadProgress.file}</div>
           </div>
         </div>
       )}
 
-      {/* Toolbar */}
-      <div className="p-2 border-b border-border flex items-center gap-2 bg-card/60 backdrop-blur-md">
-        <button onClick={handleUp} className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="Up">
-          <ArrowUp className="w-4 h-4" />
-        </button>
+      {/* Modern Toolbar */}
+      <div className="h-10 border-b border-border flex items-center gap-2 px-3 bg-transparent">
+        <div className="flex items-center gap-1">
+          <button onClick={handleUp} className="p-1.5 hover:bg-accent hover:text-accent-foreground rounded-md text-muted-foreground transition-colors" title="向上一级">
+            <ArrowUp className="w-4 h-4" />
+          </button>
+          <button onClick={() => loadFiles(currentPath, true)} className="p-1.5 hover:bg-accent hover:text-accent-foreground rounded-md text-muted-foreground transition-colors" title="刷新">
+            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+          </button>
+          <button onClick={() => loadFiles('/')} className="p-1.5 hover:bg-accent hover:text-accent-foreground rounded-md text-muted-foreground transition-colors" title="回到根目录">
+            <div className="w-4 h-4 flex items-center justify-center font-bold text-xs">~</div>
+          </button>
+        </div>
 
-        <button onClick={() => loadFiles(currentPath, true)} className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors" title="Refresh">
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="w-px h-4 bg-border mx-1"></div>
 
-        <div className="flex-1 flex items-center gap-1 bg-background/50 border border-border rounded px-2 h-8">
-          <input
-            className="flex-1 bg-transparent border-none outline-none text-xs font-mono h-full"
-            value={inputPath}
-            onChange={(e) => setInputPath(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                loadFiles(inputPath);
-              }
-            }}
-          />
+        <Breadcrumbs />
+
+        <div className="flex items-center gap-1">
           <button
             onClick={() => toggleBookmark(currentPath)}
-            className={`p-1.5 rounded transition-colors ${bookmarks.includes(currentPath) ? 'text-yellow-500' : 'text-muted-foreground hover:text-foreground'}`}
-            title="Add to Bookmarks"
+            className={cn("p-1.5 rounded-md transition-colors", bookmarks.includes(currentPath) ? 'text-yellow-500 hover:bg-yellow-500/10' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground')}
+            title="添加到书签"
           >
-            <Star className={`w-3.5 h-3.5 ${bookmarks.includes(currentPath) ? 'fill-current' : ''}`} />
-          </button>
-        </div>
-
-        {/* Bookmarks */}
-        <div className="relative">
-          <button
-            className={`p-1.5 hover:bg-secondary rounded transition-colors ${showBookmarks ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            title="Bookmarks"
-            onClick={() => setShowBookmarks(!showBookmarks)}
-          >
-            <Bookmark className="w-4 h-4" />
+            <Star className={cn("w-4 h-4", bookmarks.includes(currentPath) && "fill-current")} />
           </button>
 
-          {showBookmarks && (
-            <>
-              <div
-                className="fixed inset-0 z-40"
-                onClick={() => setShowBookmarks(false)}
-              />
-              <div className="absolute right-0 top-full mt-1 w-48 bg-popover border border-border rounded shadow-xl z-50 animate-in fade-in zoom-in-95 duration-100">
-                <div className="p-2 text-xs font-medium text-muted-foreground border-b border-border">Favorites</div>
-                {bookmarks.length === 0 ? (
-                  <div className="p-2 text-xs text-muted-foreground italic">No bookmarks</div>
-                ) : (
-                  bookmarks.map(path => (
-                    <div
-                      key={path}
-                      className="px-3 py-2 hover:bg-secondary cursor-pointer text-xs truncate flex justify-between items-center"
-                      onClick={() => {
-                        loadFiles(path);
-                        setShowBookmarks(false);
-                      }}
-                    >
-                      <span className="truncate flex-1" title={path}>{path}</span>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); toggleBookmark(path); }}
-                        className="text-muted-foreground hover:text-destructive ml-2"
+          {/* Bookmarks Dropdown */}
+          <div className="relative">
+            <button
+              className={cn("p-1.5 rounded-md transition-colors", showBookmarks ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground')}
+              title="书签"
+              onClick={() => setShowBookmarks(!showBookmarks)}
+            >
+              <Bookmark className="w-4 h-4" />
+            </button>
+            {showBookmarks && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowBookmarks(false)} />
+                <div className="absolute right-0 top-full mt-1 w-56 bg-popover border border-border rounded-lg shadow-xl z-50 py-1 animate-in fade-in zoom-in-95 data-[side=bottom]:slide-in-from-top-2">
+                  <div className="px-3 py-2 text-xs font-semibold text-muted-foreground border-b border-border mb-1">
+                    收藏夹
+                  </div>
+                  {bookmarks.length === 0 ? (
+                    <div className="px-3 py-4 text-center text-xs text-muted-foreground italic">暂无书签</div>
+                  ) : (
+                    bookmarks.map(path => (
+                      <div
+                        key={path}
+                        className="px-3 py-2 hover:bg-accent hover:text-accent-foreground cursor-pointer text-xs flex justify-between items-center group/item mx-1 rounded-md transition-colors"
+                        onClick={() => {
+                          loadFiles(path);
+                          setShowBookmarks(false);
+                        }}
                       >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </>
-          )}
+                        <div className="flex items-center gap-2 truncate flex-1">
+                          <Folder className="w-3.5 h-3.5 text-blue-400 fill-blue-400/20" />
+                          <span className="truncate" title={path}>{path}</span>
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); toggleBookmark(path); }}
+                          className="text-muted-foreground hover:text-destructive opacity-0 group-hover/item:opacity-100 transition-opacity p-0.5 rounded"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Filter Input */}
-      <div className="relative">
-        <Search className="w-3.5 h-3.5 absolute left-2 top-2 text-muted-foreground pointer-events-none" />
-        <input
-          className="w-full h-7 pl-7 pr-2 text-xs bg-muted/40 border-none rounded focus:ring-1 focus:ring-primary outline-none placeholder:text-muted-foreground/50"
-          placeholder="Filter files..."
-          value={filterQuery}
-          onChange={(e) => setFilterQuery(e.target.value)}
-        />
-      </div>
-
-
-      {/* File Table Header */}
-      <div className="grid grid-cols-[1fr_120px] gap-2 px-3 py-1.5 border-b border-border text-[10px] uppercase font-bold text-muted-foreground/70 bg-muted/20 select-none">
-        <div className="flex items-center gap-1 cursor-pointer hover:text-foreground" onClick={() => toggleSort('name')}>
-          Name <SortIcon field="name" />
+      {/* File List Header */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border/50 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/10">
+        <div className="w-6 flex justify-center shrink-0">#</div>
+        <div
+          className="flex-1 min-w-0 flex items-center gap-1 cursor-pointer hover:text-foreground transition-colors"
+          onClick={() => toggleSort('name')}
+        >
+          名称 <SortIcon field="name" />
         </div>
-        <div className="flex items-center gap-1 cursor-pointer hover:text-foreground justify-end" onClick={() => toggleSort('date')}>
-          Date <SortIcon field="date" />
-        </div>
+        {!isCompact && (
+          <div
+            className="w-32 shrink-0 flex items-center gap-1 cursor-pointer hover:text-foreground justify-end transition-colors"
+            onClick={() => toggleSort('date')}
+          >
+            日期 <SortIcon field="date" />
+          </div>
+        )}
+        {!isCompact && (
+          <div
+            className="w-20 shrink-0 flex items-center gap-1 cursor-pointer hover:text-foreground justify-end transition-colors"
+            onClick={() => toggleSort('size')}
+          >
+            大小 <SortIcon field="size" />
+          </div>
+        )}
       </div>
 
       {/* File List */}
       <div
-        className="flex-1 overflow-auto"
+        className="flex-1 overflow-y-auto overflow-x-hidden"
         onContextMenu={(e) => onContextMenu(e)}
       >
-        <div className="flex flex-col min-h-full">
-          {sortedAndFilteredFiles.map((file, i) => (
-            <div
-              key={i}
-              className={cn(
-                "grid grid-cols-[1fr_120px] gap-2 px-3 py-1.5 cursor-pointer text-xs group transition-colors select-none items-center border-b border-transparent hover:border-border/30",
-                "hover:bg-primary/5 active:bg-primary/10"
-              )}
-              onClick={() => file.type === 'd' && handleNavigate(file)}
-              onDoubleClick={() => {
-                if (file.type === '-') {
-                  const path = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
-                  handleFileOpen(file, path);
-                }
-              }}
-              onContextMenu={(e) => onContextMenu(e, file)}
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                {file.type === 'd' ?
-                  <Folder className="w-4 h-4 text-blue-400 shrink-0 fill-blue-400/20" /> :
-                  <File className="w-4 h-4 text-muted-foreground shrink-0" />
-                }
-                <span className="truncate text-foreground/90 font-medium">{file.name}</span>
-              </div>
-
-              <div className="text-right text-muted-foreground/60 font-mono text-[10px]">
-                {file.date ? (new Date(file.date).toLocaleDateString()) : '-'}
-              </div>
+        <div className="flex flex-col min-h-full pb-2">
+          {sortedAndFilteredFiles.length === 0 && !loading ? (
+            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+              <Search className="w-12 h-12 mb-4 opacity-20" />
+              <p className="text-sm">暂无文件</p>
             </div>
-          ))}
-          {/* Fill clickable space for context menu */}
-          <div className="flex-1 min-h-[50px] bg-transparent" />
+          ) : (
+            sortedAndFilteredFiles.map((file, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-2 px-4 py-1.5 cursor-pointer text-xs group transition-all border-b border-transparent hover:bg-accent/50 hover:border-border/30"
+                onClick={() => file.type === 'd' ? handleNavigate(file) : null}
+                onDoubleClick={() => {
+                  if (file.type === '-') {
+                    const path = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+                    handleFileOpen(file, path);
+                  }
+                }}
+                onContextMenu={(e) => onContextMenu(e, file)}
+              >
+                <div className="w-6 flex justify-center shrink-0">
+                  {file.type === 'd' ? (
+                    <Folder className="w-4 h-4 text-blue-400 fill-blue-400/20" />
+                  ) : (
+                    <File className="w-4 h-4 text-muted-foreground/60" />
+                  )}
+                </div>
+
+                <div className="flex-1 min-w-0 flex items-center">
+                  <span className="truncate text-foreground/90 font-medium group-hover:text-foreground">{file.name}</span>
+                </div>
+
+                {!isCompact && (
+                  <div className="w-32 shrink-0 text-right text-muted-foreground/60 font-mono text-[10px] tabular-nums">
+                    {file.date ? format(new Date(file.date), 'yyyy-MM-dd HH:mm') : '-'}
+                  </div>
+                )}
+
+                {!isCompact && (
+                  <div className="w-20 shrink-0 text-right text-muted-foreground/60 font-mono text-[10px] tabular-nums">
+                    {file.type === 'd' ? '-' : formatSize(file.size)}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
         </div>
       </div>
 
       {/* Context Menu */}
-      {
-        contextMenu && createPortal(
-          <>
+      {contextMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }} />
+          {createPortal(
             <div
-              className="fixed inset-0 z-[10002]"
+              className="fixed z-50 w-48 bg-popover border border-border rounded-lg shadow-xl py-1 animate-in fade-in zoom-in-95"
+              style={{ top: contextMenu.y, left: contextMenu.x }}
               onClick={() => setContextMenu(null)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setContextMenu(null);
-              }}
-            />
-            <div
-              className="fixed bg-popover/90 backdrop-blur-md border border-border shadow-xl rounded py-1 z-[10003] w-48 text-popover-foreground animate-in fade-in zoom-in-95 duration-100"
-              style={{
-                top: Math.min(contextMenu.y, window.innerHeight - 200),
-                left: Math.min(contextMenu.x, window.innerWidth - 180)
-              }}
             >
-              {contextMenu.file ? (
+              {/* ... (Existing Context Menu Content - kept simple for now, can be expanded) */}
+              <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground border-b border-border/50 mb-1 mx-1">
+                {contextMenu.file ? contextMenu.file.name : '当前目录'}
+              </div>
+
+              {contextMenu.file && (
                 <>
-                  <div className="px-3 py-1.5 text-xs text-muted-foreground border-b border-border/50 mb-1 truncate font-semibold bg-muted/20">
-                    {contextMenu.file.name}
-                  </div>
-                  <button onClick={() => {
-                    if (contextMenu.file?.type === '-') {
-                      const path = currentPath === '/' ? `/${contextMenu.file.name}` : `${currentPath}/${contextMenu.file.name}`;
-                      handleFileOpen(contextMenu.file, path);
-                      setContextMenu(null);
-                    }
-                  }} className="w-full text-left px-3 py-1.5 hover:bg-primary/10 hover:text-primary flex items-center gap-2 text-sm disabled:opacity-50 transition-colors" disabled={contextMenu.file.type !== '-'}>
-                    <Edit2 className="w-3.5 h-3.5" /> Edit
+                  <button
+                    className="w-full text-left px-3 py-2 hover:bg-accent hover:text-accent-foreground text-xs flex items-center gap-2 transition-colors"
+                    onClick={() => {
+                      if (contextMenu.file) {
+                        const path = currentPath === '/' ? `/${contextMenu.file.name}` : `${currentPath}/${contextMenu.file.name}`;
+                        handleDownload(path);
+                      }
+                    }}
+                  >
+                    <Download className="w-3.5 h-3.5" /> 下载
                   </button>
-                  <button onClick={() => {
-                    if (contextMenu.file) handleDownload(contextMenu.file);
-                    setContextMenu(null);
-                  }} className="w-full text-left px-3 py-1.5 hover:bg-primary/10 hover:text-primary flex items-center gap-2 text-sm transition-colors">
-                    <Download className="w-3.5 h-3.5" /> Download
+                  {contextMenu.file.type === '-' && (
+                    <button
+                      className="w-full text-left px-3 py-2 hover:bg-accent hover:text-accent-foreground text-xs flex items-center gap-2 transition-colors"
+                      onClick={() => {
+                        if (contextMenu.file) {
+                          const path = currentPath === '/' ? `/${contextMenu.file.name}` : `${currentPath}/${contextMenu.file.name}`;
+                          handleFileOpen(contextMenu.file, path);
+                        }
+                      }}
+                    >
+                      <Edit2 className="w-3.5 h-3.5" /> 编辑
+                    </button>
+                  )}
+                  <div className="h-px bg-border/50 my-1 mx-2" />
+                  <button
+                    className="w-full text-left px-3 py-2 hover:bg-destructive hover:text-destructive-foreground text-xs flex items-center gap-2 text-destructive transition-colors rounded-sm mx-1 w-[calc(100%-8px)]"
+                    onClick={() => {
+                      if (contextMenu.file) {
+                        const path = currentPath === '/' ? `/${contextMenu.file.name}` : `${currentPath}/${contextMenu.file.name}`;
+                        handleDelete(path);
+                      }
+                    }}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> 删除
                   </button>
-                  <button onClick={() => {
-                    if (contextMenu.file) handleRename(contextMenu.file);
-                    setContextMenu(null);
-                  }} className="w-full text-left px-3 py-1.5 hover:bg-primary/10 hover:text-primary flex items-center gap-2 text-sm transition-colors">
-                    <Edit2 className="w-3.5 h-3.5" /> Rename
-                  </button>
-                  <button onClick={() => {
-                    if (contextMenu.file) handleDelete(contextMenu.file);
-                    setContextMenu(null);
-                  }} className="w-full text-left px-3 py-1.5 hover:bg-destructive/10 text-destructive flex items-center gap-2 text-sm transition-colors">
-                    <Trash2 className="w-3.5 h-3.5" /> Delete
-                  </button>
-                  <div className="h-px bg-border/50 my-1" />
                 </>
-              ) : (
-                <div className="px-3 py-1.5 text-xs text-muted-foreground border-b border-border/50 mb-1 font-semibold bg-muted/20">
-                  Current Folder
-                </div>
               )}
 
-              <button onClick={handleCreateFile} className="w-full text-left px-3 py-1.5 hover:bg-primary/10 hover:text-primary flex items-center gap-2 text-sm transition-colors">
-                <Plus className="w-3.5 h-3.5" /> New File
+              {!contextMenu.file && (
+                <>
+                  <button
+                    className="w-full text-left px-3 py-2 hover:bg-accent hover:text-accent-foreground text-xs flex items-center gap-2 transition-colors"
+                    onClick={() => {
+                      setInputDialog({
+                        title: '新建文件夹',
+                        message: '请输入文件夹名称:',
+                        defaultValue: '',
+                        onConfirm: (value) => handleCreateFolder(value)
+                      });
+                    }}
+                  >
+                    <FolderPlus className="w-3.5 h-3.5" /> 新建文件夹
+                  </button>
+                  <button
+                    className="w-full text-left px-3 py-2 hover:bg-accent hover:text-accent-foreground text-xs flex items-center gap-2 transition-colors"
+                    onClick={() => {
+                      setInputDialog({
+                        title: '新建文件',
+                        message: '请输入文件名称:',
+                        defaultValue: '',
+                        onConfirm: (value) => handleCreateFile(value)
+                      });
+                    }}
+                  >
+                    <Plus className="w-3.5 h-3.5" /> 新建文件
+                  </button>
+                  <button
+                    className="w-full text-left px-3 py-2 hover:bg-accent hover:text-accent-foreground text-xs flex items-center gap-2 transition-colors"
+                    onClick={() => loadFiles(currentPath, true)}
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> 刷新
+                  </button>
+
+                </>
+              )}
+            </div>,
+            document.body
+          )}
+        </>
+      )}
+
+      {/* Input Dialog (Simple Re-implementation) */}
+      {inputDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-card border border-border p-6 rounded-lg shadow-xl w-80 animate-in zoom-in-95 scale-100">
+            <h3 className="text-sm font-semibold mb-2">{inputDialog.title}</h3>
+            <p className="text-xs text-muted-foreground mb-4">{inputDialog.message}</p>
+            <input
+              autoFocus
+              className="w-full bg-secondary border border-border rounded px-3 py-2 text-xs mb-4 outline-none focus:ring-1 focus:ring-primary"
+              defaultValue={inputDialog.defaultValue}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  inputDialog.onConfirm((e.currentTarget as HTMLInputElement).value);
+                  setInputDialog(null);
+                } else if (e.key === 'Escape') {
+                  setInputDialog(null);
+                }
+              }}
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setInputDialog(null)}
+                className="px-3 py-1.5 rounded text-xs hover:bg-secondary text-muted-foreground transition-colors"
+              >
+                取消
               </button>
-              <button onClick={handleCreateFolder} className="w-full text-left px-3 py-1.5 hover:bg-primary/10 hover:text-primary flex items-center gap-2 text-sm transition-colors">
-                <FolderPlus className="w-3.5 h-3.5" /> New Folder
-              </button>
-              <button onClick={() => { handleUpload(); setContextMenu(null); }} className="w-full text-left px-3 py-1.5 hover:bg-primary/10 hover:text-primary flex items-center gap-2 text-sm transition-colors">
-                <Upload className="w-3.5 h-3.5" /> Upload File
-              </button>
-              <button onClick={() => { loadFiles(currentPath, true); setContextMenu(null); }} className="w-full text-left px-3 py-1.5 hover:bg-primary/10 hover:text-primary flex items-center gap-2 text-sm border-t border-border/50 mt-1 pt-2 transition-colors">
-                <RefreshCw className="w-3.5 h-3.5" /> Refresh
+              <button
+                onClick={() => {
+                  const input = document.querySelector('input[type="text"]') as HTMLInputElement;
+                }}
+                className="hidden"
+              >
+                确认
               </button>
             </div>
-          </>,
-          document.body
-        )
-      }
+          </div>
+        </div>
+      )}
 
-      {/* File Editor Modal */}
-      {
-        editingFile && (
+      {editingFile && (
+        <div className="fixed inset-0 z-50 bg-background flex flex-col animate-in slide-in-from-bottom-5">
+          <div className="border-b border-border p-2 flex items-center justify-between bg-muted/20">
+            <div className="flex items-center gap-2">
+              <button onClick={() => setEditingFile(null)} className="p-1 hover:bg-accent rounded text-muted-foreground">
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+              <span className="text-sm font-medium">{editingFile.name}</span>
+            </div>
+          </div>
           <FileEditor
-            fileName={editingFile.name}
-            filePath={editingFile.path}
-            initialContent={editingFile.content}
-            onSave={async (newContent) => {
-              await window.electron.sftpWriteFile(connectionId, editingFile.path, newContent);
+            content={editingFile.content}
+            path={editingFile.path}
+            onSave={async (content) => {
+              await window.electron.sftpWriteFile(connectionId, editingFile.path, content);
+              loadFiles(currentPath); // Refresh
             }}
             onClose={() => setEditingFile(null)}
           />
-        )
-      }
-
-      {/* Custom Input Dialog */}
-      {
-        inputDialog && createPortal(
-          <div className="fixed inset-0 z-[10010] flex items-center justify-center p-4 bg-background/60 backdrop-blur-sm">
-            <div className="w-full max-w-sm bg-card border border-border shadow-2xl rounded-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-              <div className="px-4 py-3 border-b border-border bg-muted/30 font-medium text-sm flex justify-between items-center">
-                {inputDialog.title}
-                <button onClick={() => setInputDialog(null)} className="text-muted-foreground hover:text-foreground">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="p-4 flex flex-col gap-3">
-                <label className="text-sm text-muted-foreground">{inputDialog.message}</label>
-                <input
-                  autoFocus
-                  className="w-full bg-background border border-border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                  defaultValue={inputDialog.defaultValue}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      inputDialog.onConfirm(e.currentTarget.value);
-                      setInputDialog(null);
-                    } else if (e.key === 'Escape') {
-                      setInputDialog(null);
-                    }
-                  }}
-                  id="dialog-input"
-                />
-                <div className="flex justify-end gap-2 mt-2">
-                  <button
-                    onClick={() => setInputDialog(null)}
-                    className="px-4 py-2 text-sm hover:bg-secondary rounded transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => {
-                      const val = (document.getElementById('dialog-input') as HTMLInputElement).value;
-                      inputDialog.onConfirm(val);
-                      setInputDialog(null);
-                    }}
-                    className="px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded transition-colors"
-                  >
-                    Confirm
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )
-      }
-    </div >
+        </div>
+      )}
+    </div>
   );
 }
