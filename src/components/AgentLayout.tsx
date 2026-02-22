@@ -9,9 +9,10 @@ interface AgentLayoutProps {
     connectionId: string;
     messages: AgentMessage[];
     onMessagesChange: (messages: AgentMessage[]) => void;
+    isActive: boolean; // whether agent mode is currently the active layout
 }
 
-export function AgentLayout({ connectionId, messages, onMessagesChange }: AgentLayoutProps) {
+export function AgentLayout({ connectionId, messages, onMessagesChange, isActive }: AgentLayoutProps) {
     const [chatWidth, setChatWidth] = useState(0.55); // 55% for chat
     const layoutRef = useRef<HTMLDivElement>(null);
     const isResizing = useRef(false);
@@ -90,9 +91,10 @@ export function AgentLayout({ connectionId, messages, onMessagesChange }: AgentL
                         <div className="w-2 h-2 rounded-full bg-green-500 mr-2" />
                         终端观察
                     </div>
-                    {/* Terminal Slot Consumer - placeholder that receives the shared terminal DOM node */}
+                    {/* TerminalSlotConsumer only mounts when Agent is the active mode,
+                        so it can claim the terminal without racing against Normal mode's consumer */}
                     <div className="flex-1 min-h-0 relative overflow-hidden">
-                        <TerminalSlotConsumer />
+                        {isActive && <TerminalSlotConsumer />}
                     </div>
                 </div>
             </div>

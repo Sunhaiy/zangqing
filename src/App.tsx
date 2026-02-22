@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { FileBrowser } from './components/FileBrowser';
 import { SystemMonitor } from './components/SystemMonitor';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -32,17 +32,16 @@ function App() {
   // Workspace mode: normal or agent
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('normal');
 
-  // Per-session agent chat history (persisted across mode switches)
-  const agentMessagesRef = useRef<Map<string, AgentMessage[]>>(new Map());
-  const [agentMessagesVersion, setAgentMessagesVersion] = useState(0);
+  // Per-session agent chat history keyed by sessionId — useState ensures
+  // React properly detects changes and re-renders the AgentLayout with fresh messages.
+  const [agentMessages, setAgentMessagesState] = useState<Record<string, AgentMessage[]>>({});
 
   const getAgentMessages = (sessionId: string): AgentMessage[] => {
-    return agentMessagesRef.current.get(sessionId) || [];
+    return agentMessages[sessionId] || [];
   };
 
   const setAgentMessages = (sessionId: string, messages: AgentMessage[]) => {
-    agentMessagesRef.current.set(sessionId, messages);
-    setAgentMessagesVersion(v => v + 1); // trigger re-render
+    setAgentMessagesState(prev => ({ ...prev, [sessionId]: messages }));
   };
 
   const activeSessionIdx = sessions.findIndex(s => s.uniqueId === activeSessionId);
@@ -94,7 +93,11 @@ function App() {
     if (e) e.stopPropagation();
 
     // Clean up agent messages for this session
-    agentMessagesRef.current.delete(id);
+    setAgentMessagesState(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
 
     setSessions(prev => {
       const newSessions = prev.filter(s => s.uniqueId !== id);
@@ -112,7 +115,7 @@ function App() {
   const handleCloseAllSessions = () => {
     if (sessions.length === 0) return;
     if (confirm('Are you sure you want to close all active sessions?')) {
-      agentMessagesRef.current.clear();
+      setAgentMessagesState({});
       setSessions([]);
       setActiveSessionId(null);
       setPage('connections');
@@ -166,10 +169,11 @@ function App() {
               {sessions.map(session => (
                 <div
                   key={session.uniqueId}
-                  className="absolute inset-0 z-0 bg-transparent"
+                  className="absolute inset-0"
                   style={{
                     visibility: session.uniqueId === activeSessionId ? 'visible' : 'hidden',
-                    zIndex: session.uniqueId === activeSessionId ? 10 : 0
+                    zIndex: session.uniqueId === activeSessionId ? 10 : 0,
+                    background: 'hsl(var(--background))'
                   }}
                 >
                   {/* TerminalSlotProvider wraps both layouts so the single TerminalView
@@ -235,6 +239,7 @@ function App() {
                         connectionId={session.uniqueId}
                         messages={getAgentMessages(session.uniqueId)}
                         onMessagesChange={(msgs) => setAgentMessages(session.uniqueId, msgs)}
+                        isActive={workspaceMode === 'agent'}
                       />
                     </div>
                   </TerminalSlotProvider>
