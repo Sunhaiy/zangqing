@@ -102,7 +102,7 @@ export function TitleBar({
       {/* Center: Session Tabs */}
       {hasSessions && (
         <div
-          className="flex-1 flex items-center overflow-x-auto no-scrollbar h-full gap-0.5 px-1"
+          className="flex items-center overflow-x-auto no-scrollbar h-full gap-0.5 px-1 shrink min-w-0"
           style={{ WebkitAppRegion: "no-drag" } as any}
         >
           {sessions.map((session) => (
@@ -147,8 +147,8 @@ export function TitleBar({
         </div>
       )}
 
-      {/* Spacer when no sessions */}
-      {!hasSessions && <div className="flex-1" style={{ WebkitAppRegion: "drag" } as any} />}
+      {/* Draggable spacer — fills remaining space between tabs and right controls */}
+      <div className="flex-1 h-full" style={{ WebkitAppRegion: "drag" } as any} />
 
       {/* Right: Settings + Window Controls */}
       <div className="flex items-center h-full shrink-0" style={{ WebkitAppRegion: "no-drag" } as any}>
