@@ -279,17 +279,72 @@ class AIService {
         });
 
         if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`AI request failed: ${error}`);
+            const errorText = await response.text();
+
+            // Handle models that don't support native function calling
+            // They output <function=name>{"arg":"val"} which the API rejects with tool_use_failed
+            try {
+                const errorJson = JSON.parse(errorText);
+                const failedGen = errorJson?.error?.failed_generation;
+                if (errorJson?.error?.code === 'tool_use_failed' && failedGen) {
+                    // Parse: <function=execute_ssh_command>{"command": "uptime"}
+                    const funcMatch = failedGen.match(/<function=(\w+)>([\s\S]*)/);
+                    if (funcMatch) {
+                        const funcName = funcMatch[1];
+                        const argsStr = funcMatch[2].trim();
+                        return {
+                            content: null,
+                            toolCalls: [{
+                                id: `call_${Date.now()}`,
+                                type: 'function' as const,
+                                function: {
+                                    name: funcName,
+                                    arguments: argsStr,
+                                }
+                            }],
+                            finishReason: 'tool_calls',
+                        };
+                    }
+                }
+            } catch { }
+
+            throw new Error(`AI request failed: ${errorText}`);
         }
 
         const data = await response.json();
         const choice = data.choices?.[0];
         const message = choice?.message;
 
+        // If model returned tool_calls natively, use them
+        if (message?.tool_calls?.length) {
+            return {
+                content: message.content || null,
+                toolCalls: message.tool_calls,
+                finishReason: choice?.finish_reason || 'tool_calls',
+            };
+        }
+
+        // Fallback: parse <function=name>{"arg":"val"} from content text
+        const content = message?.content || '';
+        const funcMatch = content.match(/<function=(\w+)>([\s\S]*?)(?:<\/function>|$)/);
+        if (funcMatch) {
+            return {
+                content: null,
+                toolCalls: [{
+                    id: `call_${Date.now()}`,
+                    type: 'function' as const,
+                    function: {
+                        name: funcMatch[1],
+                        arguments: funcMatch[2].trim(),
+                    }
+                }],
+                finishReason: 'tool_calls',
+            };
+        }
+
         return {
-            content: message?.content || null,
-            toolCalls: message?.tool_calls || null,
+            content: content || null,
+            toolCalls: null,
             finishReason: choice?.finish_reason || 'stop',
         };
     }
