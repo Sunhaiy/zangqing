@@ -193,7 +193,7 @@ export function AgentLayout({ connectionId, profileId, messages, onMessagesChang
                 )}
 
                 {/* AI Chat — always visible */}
-                <div className="flex-1 min-w-0 h-full bg-card/50 rounded-r-lg border border-border overflow-hidden flex flex-col">
+                <div className="flex-1 min-w-0 h-full bg-card rounded-r-lg border border-border overflow-hidden flex flex-col">
                     <ErrorBoundary name="AIChatPanel">
                         <AIChatPanel
                             connectionId={connectionId}
@@ -224,7 +224,7 @@ export function AgentLayout({ connectionId, profileId, messages, onMessagesChang
                     {/* Terminal Header */}
                     <div className="flex items-center px-3 py-1.5 border-b border-border bg-muted/40 text-xs text-muted-foreground">
                         <div className={`w-2 h-2 rounded-full mr-2 ${sessionStatus === 'connected' ? 'bg-green-500' : sessionStatus === 'connecting' ? 'bg-yellow-500 animate-pulse' : 'bg-red-400'}`} />
-                        {t('agent.terminalView')}
+                        {host || 'Terminal'}
                     </div>
                     <div className="flex-1 min-h-0 relative overflow-hidden">
                         {isActive && <TerminalSlotConsumer />}

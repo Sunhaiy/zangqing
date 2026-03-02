@@ -621,7 +621,7 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
             )}
 
             {/* Input Area */}
-            <div className="border-t border-border p-3 bg-background/50">
+            <div className="border-t border-border p-3 bg-background">
                 {/* Mode & Model selector bar — horizontal */}
                 <div className="flex items-center gap-2 mb-2">
                     {/* Control Mode Selector */}
@@ -883,7 +883,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
                     </button>
                     {/* Output area */}
                     {expanded && message.role === 'tool' && message.content && (
-                        <div className="border-t bg-black/20" style={{ borderColor: `${colors.accent}15` }}>
+                        <div className="border-t bg-muted/50" style={{ borderColor: `${colors.accent}15` }}>
                             <pre className="px-3 py-2 text-[11px] text-muted-foreground/70 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto leading-relaxed scrollbar-hide">
                                 {message.content}
                             </pre>
