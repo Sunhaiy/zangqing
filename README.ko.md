@@ -74,5 +74,5 @@ npm run dist
 
 <div align="center">
   <p>Built with ❤️ by passionate developers.</p>
-  <p>License: MIT</p>
+  <p>License: <a href="./LICENSE">Custom (비상업적 무료, 저작자 표시 필수)</a></p>
 </div>
