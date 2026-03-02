@@ -302,15 +302,15 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
                     displayCmd = args.command;
                     execCmd = args.command;
                 } else if (toolName === 'read_file') {
-                    displayCmd = `📖 read ${args.path}`;
+                    displayCmd = `read ${args.path}`;
                     execCmd = `cat ${JSON.stringify(args.path)}`;
                 } else if (toolName === 'write_file') {
-                    displayCmd = `✏️ write ${args.path}`;
+                    displayCmd = `write ${args.path}`;
                     // Use heredoc for safe multi-line write
                     const escaped = args.content.replace(/\\/g, '\\\\').replace(/'/g, "'\\''");
                     execCmd = `cat > ${JSON.stringify(args.path)} << 'AGENT_EOF'\n${args.content}\nAGENT_EOF`;
                 } else if (toolName === 'list_directory') {
-                    displayCmd = `📂 list ${args.path}`;
+                    displayCmd = `ls ${args.path}`;
                     execCmd = `ls -la ${JSON.stringify(args.path)}`;
                 } else {
                     displayCmd = `${toolName}(${JSON.stringify(args)})`;
@@ -810,8 +810,16 @@ function MessageBubble({ message }: { message: AgentMessage }) {
         const isList = toolCall.name === 'list_directory';
         const isFileOp = isRead || isWrite || isList;
         const ToolIcon = isRead ? FileText : isWrite ? Pencil : isList ? FolderOpen : Terminal;
-        const accentColor = isRead ? 'blue' : isWrite ? 'amber' : isList ? 'cyan' : (isPending ? 'yellow' : 'emerald');
-        const statusLabel = isFileOp ? (isPending ? '读取中' : '完成') : (isPending ? '待批准' : '已执行');
+        // Color configs per tool type
+        const colorMap = {
+            read_file: { accent: '#3b82f6', light: 'rgba(59,130,246,0.12)', label: '读取文件' },
+            write_file: { accent: '#f59e0b', light: 'rgba(245,158,11,0.12)', label: '写入文件' },
+            list_directory: { accent: '#06b6d4', light: 'rgba(6,182,212,0.12)', label: '列出目录' },
+            execute_ssh_command: { accent: isPending ? '#eab308' : '#10b981', light: isPending ? 'rgba(234,179,8,0.08)' : 'rgba(16,185,129,0.06)', label: isPending ? '待批准' : '已执行' },
+        };
+        const colors = colorMap[toolCall.name as keyof typeof colorMap] || colorMap.execute_ssh_command;
+        const statusLabel = isFileOp ? (isPending ? '执行中' : '完成') : colors.label;
+
         return (
             <div className="space-y-1.5">
                 {/* Reasoning/thinking block */}
@@ -840,48 +848,42 @@ function MessageBubble({ message }: { message: AgentMessage }) {
                         </div>
                     </div>
                 )}
-                {/* ── Tool block ── */}
-                <div className={cn(
-                    "mx-1 rounded-lg overflow-hidden border transition-all duration-300",
-                    isPending
-                        ? `border-${accentColor}-500/30 shadow-[0_0_15px_rgba(234,179,8,0.08)]`
-                        : isFileOp
-                            ? `border-${accentColor}-500/20 shadow-[0_0_12px_rgba(59,130,246,0.06)]`
-                            : "border-emerald-500/20 shadow-[0_0_12px_rgba(16,185,129,0.06)]"
-                )}>
-                    {/* Command header */}
+                {/* ── Tool block with accent strip ── */}
+                <div
+                    className="mx-1 rounded-lg overflow-hidden transition-all duration-300"
+                    style={{
+                        border: `1px solid ${colors.accent}20`,
+                    }}
+                >
+                    {/* Command header with left accent strip */}
                     <button
                         onClick={() => setExpanded(!expanded)}
-                        className={cn(
-                            "flex items-center gap-2 w-full px-3 py-2 text-xs transition-colors",
-                            "bg-gradient-to-r from-[hsl(var(--card)/0.8)] to-[hsl(var(--card)/0.4)]",
-                            "hover:from-[hsl(var(--card))] hover:to-[hsl(var(--card)/0.6)]"
-                        )}
+                        className="flex items-center gap-2 w-full px-3 py-2 text-xs transition-colors hover:bg-[hsl(var(--card)/0.6)]"
+                        style={{ background: `linear-gradient(90deg, ${colors.accent}08, transparent)` }}
                     >
+                        {/* Left accent strip */}
+                        <div
+                            className="w-0.5 h-5 rounded-full shrink-0 -ml-1"
+                            style={{ backgroundColor: colors.accent }}
+                        />
                         {expanded ? <ChevronDown className="w-3 h-3 text-muted-foreground/60" /> : <ChevronRight className="w-3 h-3 text-muted-foreground/60" />}
-                        <ToolIcon className={cn("w-3.5 h-3.5",
-                            isRead ? 'text-blue-400' : isWrite ? 'text-amber-400' : isList ? 'text-cyan-400' : isPending ? "text-yellow-500" : "text-emerald-400"
-                        )} />
-                        <code className="font-mono text-[11px] text-foreground/90 truncate flex-1 text-left">{toolCall.command}</code>
+                        <ToolIcon className="w-3.5 h-3.5 shrink-0" style={{ color: colors.accent }} />
+                        <code className="font-mono text-[11px] text-foreground/90 truncate flex-1 text-left">{toolCall.command.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{2B55}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}]/gu, '').trim()}</code>
                         {isPending ? (
                             <span className="flex items-center gap-1.5 ml-2 shrink-0">
-                                <span className={`w-1.5 h-1.5 rounded-full bg-${accentColor}-500 animate-pulse`} />
-                                <span className={`text-[10px] font-medium text-${accentColor}-500/80`}>{statusLabel}</span>
+                                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: colors.accent }} />
+                                <span className="text-[10px] font-medium" style={{ color: `${colors.accent}cc` }}>{statusLabel}</span>
                             </span>
                         ) : (
                             <span className="flex items-center gap-1 ml-2 shrink-0">
-                                <Check className={cn("w-3 h-3",
-                                    isFileOp ? `text-${accentColor}-400` : 'text-emerald-400'
-                                )} />
-                                <span className={cn("text-[10px] font-medium",
-                                    isFileOp ? `text-${accentColor}-400/80` : 'text-emerald-400/80'
-                                )}>{statusLabel}</span>
+                                <Check className="w-3 h-3" style={{ color: colors.accent }} />
+                                <span className="text-[10px] font-medium" style={{ color: `${colors.accent}cc` }}>{statusLabel}</span>
                             </span>
                         )}
                     </button>
                     {/* Output area */}
                     {expanded && message.role === 'tool' && message.content && (
-                        <div className="border-t border-border/30 bg-black/20">
+                        <div className="border-t bg-black/20" style={{ borderColor: `${colors.accent}15` }}>
                             <pre className="px-3 py-2 text-[11px] text-muted-foreground/70 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto leading-relaxed scrollbar-hide">
                                 {message.content}
                             </pre>
