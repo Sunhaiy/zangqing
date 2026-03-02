@@ -156,6 +156,17 @@ export function ConnectionForm({ initialData, onSave, onCancel }: ConnectionForm
                 </div>
             )}
 
+            {/* Tags */}
+            <div className={groupCls}>
+                <label className={labelCls}>标签（逗号分隔）</label>
+                <Input
+                    value={(formData.tags || []).join(', ')}
+                    onChange={e => set({ tags: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                    placeholder="Prod, CN-Hangzhou, Web"
+                />
+                <p className="text-[10px] text-muted-foreground/50 mt-0.5">用于在首页卡片上显示环境/地域标签</p>
+            </div>
+
             {/* Jump Host (collapsible) */}
             <div className="border border-border rounded-lg overflow-hidden">
                 <button

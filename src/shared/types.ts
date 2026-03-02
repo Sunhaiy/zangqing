@@ -14,6 +14,9 @@ export interface SSHConnection {
   jumpUsername?: string;
   jumpPassword?: string;
   jumpPrivateKeyPath?: string;
+  // Card metadata
+  tags?: string[];    // e.g. ['Prod', 'CN-Hangzhou']
+  os?: string;        // cached OS distro name (e.g. 'Ubuntu', 'CentOS')
 }
 
 // Agent session persistence

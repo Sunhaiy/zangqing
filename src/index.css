@@ -162,3 +162,48 @@ input[type="number"] {
   -moz-appearance: textfield;
   appearance: textfield;
 }
+
+/* ── Server Card Animations ── */
+@keyframes breathe {
+
+  0%,
+  100% {
+    box-shadow: 0 0 4px 1px currentColor;
+    opacity: 0.6;
+  }
+
+  50% {
+    box-shadow: 0 0 8px 3px currentColor;
+    opacity: 1;
+  }
+}
+
+@keyframes border-rotate {
+  from {
+    --border-angle: 0deg;
+  }
+
+  to {
+    --border-angle: 360deg;
+  }
+}
+
+@property --border-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.card-breathe {
+  animation: breathe 2.5s ease-in-out infinite;
+}
+
+.card-border-glow {
+  animation: border-rotate 3s linear infinite;
+  border-image: conic-gradient(from var(--border-angle), transparent 25%, var(--glow-color, #10b981) 50%, transparent 75%) 1;
+}
+
+/* Font utility */
+.font-mono-code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+}

@@ -87,10 +87,10 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
         saveTimerRef.current = setTimeout(async () => {
             const sid = sessionIdRef.current;
             if (!sid || !profileId) return;
-            // Auto-generate title from first user message
-            const firstUser = messages.find(m => m.role === 'user');
-            const title = firstUser
-                ? firstUser.content.replace(/\s+/g, ' ').slice(0, 40) + (firstUser.content.length > 40 ? '…' : '')
+            // Auto-generate title from last user message (most recent topic)
+            const lastUser = [...messages].reverse().find(m => m.role === 'user');
+            const title = lastUser
+                ? lastUser.content.replace(/\s+/g, ' ').slice(0, 40) + (lastUser.content.length > 40 ? '…' : '')
                 : t('agent.newSession');
             const session = {
                 id: sid,
@@ -201,18 +201,41 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
             }
         }
 
-        // Sanitize: remove orphaned tool messages that have no preceding assistant with matching tool_calls
-        const validToolCallIds = new Set<string>();
+        // Sanitize: ensure tool_calls and tool responses are always paired
+        // 1. Collect all tool_call IDs from assistant messages
+        const allToolCallIds = new Set<string>();
         for (const msg of chatMsgs) {
             if (msg.role === 'assistant' && msg.tool_calls) {
                 for (const tc of msg.tool_calls) {
-                    validToolCallIds.add(tc.id);
+                    allToolCallIds.add(tc.id);
                 }
             }
         }
-        return chatMsgs.filter(msg =>
-            msg.role !== 'tool' || validToolCallIds.has(msg.tool_call_id)
-        );
+        // 2. Collect all tool response IDs
+        const allToolResponseIds = new Set<string>();
+        for (const msg of chatMsgs) {
+            if (msg.role === 'tool' && msg.tool_call_id) {
+                allToolResponseIds.add(msg.tool_call_id);
+            }
+        }
+        // 3. Remove orphaned tool messages (no matching assistant) and
+        //    strip tool_calls from assistant messages that have no matching tool response
+        return chatMsgs.filter(msg => {
+            if (msg.role === 'tool') {
+                return allToolCallIds.has(msg.tool_call_id);
+            }
+            return true;
+        }).map(msg => {
+            if (msg.role === 'assistant' && msg.tool_calls) {
+                const hasAllResponses = msg.tool_calls.every((tc: any) => allToolResponseIds.has(tc.id));
+                if (!hasAllResponses) {
+                    // Strip tool_calls — treat as plain text message
+                    const { tool_calls, ...rest } = msg;
+                    return { ...rest, content: rest.content || '(command pending)' };
+                }
+            }
+            return msg;
+        });
     };
 
     // The Agent Loop
@@ -361,9 +384,17 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
         isLoadingRef.current = true;
 
         try {
+            // Immediately update the current UI messages to show "已执行" status
+            const updatedCurrentMessages = latestMessagesRef.current.map(m =>
+                m.id === msgId
+                    ? { ...m, toolCall: { ...m.toolCall!, status: 'executed' as const } }
+                    : m
+            );
+            onMessagesChange(updatedCurrentMessages);
+
             const result = await execCommand(command);
 
-            // Update the assistant message to show executed
+            // Also update the snapshot for the loop continuation
             let loopMessages = snapshotMessages.map(m =>
                 m.id === msgId
                     ? { ...m, toolCall: { ...m.toolCall!, status: 'executed' as const } }

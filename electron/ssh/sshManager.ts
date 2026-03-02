@@ -156,24 +156,32 @@ export class SSHManager {
         if (!conn) throw new Error('Not connected');
 
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                reject(new Error(`Command timed out after ${timeoutMs / 1000}s`));
-            }, timeoutMs);
+            let stdout = '';
+            let stderr = '';
+            let settled = false;
 
             conn.exec(command, (err, stream) => {
-                if (err) {
-                    clearTimeout(timer);
-                    return reject(err);
-                }
+                if (err) return reject(err);
 
-                let stdout = '';
-                let stderr = '';
+                const timer = setTimeout(() => {
+                    if (settled) return;
+                    settled = true;
+                    // On timeout: return partial output instead of throwing everything away
+                    const maxLen = 10240;
+                    if (stdout.length > maxLen) stdout = stdout.slice(0, maxLen) + '\n... (output truncated)';
+                    if (stderr.length > maxLen) stderr = stderr.slice(0, maxLen) + '\n... (output truncated)';
+                    stdout += `\n⏱ Command timed out after ${timeoutMs / 1000}s (partial output above)`;
+                    try { stream.close(); } catch (_) { }
+                    resolve({ stdout, stderr, exitCode: 124 }); // 124 = timeout
+                }, timeoutMs);
 
                 stream.on('data', (data: Buffer) => { stdout += data.toString(); });
                 stream.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
                 stream.on('close', (code: number) => {
                     clearTimeout(timer);
+                    if (settled) return;
+                    settled = true;
                     // Truncate very long output to avoid overwhelming AI context
                     const maxLen = 10240; // 10KB
                     if (stdout.length > maxLen) stdout = stdout.slice(0, maxLen) + '\n... (output truncated)';
