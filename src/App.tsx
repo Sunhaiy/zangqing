@@ -217,7 +217,7 @@ function App() {
             so they appear on top without unmounting the workspace below. */}
           <div
             className="flex-1 relative overflow-hidden flex flex-col"
-            style={{ visibility: sessions.length > 0 ? 'visible' : 'hidden' }}
+            style={{ visibility: page === 'workspace' && sessions.length > 0 ? 'visible' : 'hidden' }}
           >
             <div className="flex-1 relative overflow-hidden">
               {/* Render ALL sessions to preserve state, but hide inactive ones */}

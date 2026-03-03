@@ -200,7 +200,7 @@ export function AgentLayout({ connectionId, profileId, messages, onMessagesChang
                 )}
 
                 {/* AI Chat — always visible */}
-                <div className="flex-1 min-w-0 h-full bg-card rounded-r-lg border border-border overflow-hidden flex flex-col">
+                <div className="flex-1 min-w-0 h-full bg-card/50 rounded-r-lg border border-border overflow-hidden flex flex-col">
                     <ErrorBoundary name="AIChatPanel">
                         <AIChatPanel
                             connectionId={connectionId}

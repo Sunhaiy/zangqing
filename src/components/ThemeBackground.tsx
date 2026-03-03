@@ -105,28 +105,32 @@ export const ThemeBackground: React.FC = () => {
     };
 
     const createStarryAnimation = (container: HTMLDivElement) => {
-        const starCount = 100;
+        const starCount = 60; // Reduced count to be less distracting
         for (let i = 0; i < starCount; i++) {
             const star = document.createElement('div');
             const size = Math.random() * 2 + 1;
-            star.className = 'absolute rounded-full bg-white pointer-events-none shadow-[0_0_8px_2px_rgba(255,255,255,0.4)]';
+            // Softer glow to not look like text or dirt
+            star.className = 'absolute rounded-full bg-white/60 pointer-events-none shadow-[0_0_6px_1px_rgba(255,255,255,0.15)]';
             gsap.set(star, {
                 width: size,
                 height: size,
                 x: Math.random() * window.innerWidth,
                 y: Math.random() * window.innerHeight,
-                opacity: Math.random() * 0.5 + 0.1
+                opacity: Math.random() * 0.3 + 0.1
             });
             container.appendChild(star);
 
+            const duration = Math.random() * 30 + 15; // Much slower drift
             gsap.to(star, {
-                opacity: Math.random() * 0.8 + 0.4,
-                scale: Math.random() * 1.5 + 1,
-                duration: Math.random() * 4 + 2,
+                x: `+=${Math.random() * 200 - 100}`, // Gentle drift
+                y: `+=${Math.random() * 200 - 100}`,
+                opacity: Math.random() * 0.5 + 0.2,
+                scale: Math.random() * 1.2 + 0.8,
+                duration,
                 ease: 'sine.inOut',
                 repeat: -1,
                 yoyo: true,
-                delay: Math.random() * -5
+                delay: Math.random() * -duration
             });
         }
     };
