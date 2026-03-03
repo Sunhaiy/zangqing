@@ -160,7 +160,7 @@ export function Settings({ onBack }: SettingsProps) {
                   <span className="text-xs text-muted-foreground mb-2">
                     {t('settings.appearance.backgroundThemeDesc')}
                   </span>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                     {Object.values(baseThemes).map((theme) => (
                       <div
                         key={theme.id}
@@ -171,16 +171,16 @@ export function Settings({ onBack }: SettingsProps) {
                         onClick={() => setBaseTheme(theme.id)}
                       >
                         <div
-                          className="aspect-[4/3] rounded-md border shadow-sm mb-2 overflow-hidden relative flex items-center justify-center"
+                          className="aspect-video rounded-md border shadow-sm overflow-hidden relative flex items-center justify-center transition-colors"
                           style={{
                             background: `hsl(${theme.colors.background})`,
                             color: `hsl(${theme.colors.foreground})`
                           }}
                         >
-                          <span className="text-xs font-semibold">{theme.name}</span>
+                          <span className="text-sm font-semibold tracking-wide">{theme.name}</span>
                           {baseThemeId === theme.id && (
-                            <div className="absolute top-1 right-1 bg-primary text-primary-foreground rounded-full p-0.5">
-                              <Check className="w-3 h-3" />
+                            <div className="absolute top-1.5 right-1.5 bg-primary text-primary-foreground rounded-full p-0.5 shadow-md">
+                              <Check className="w-3.5 h-3.5" />
                             </div>
                           )}
                         </div>
@@ -190,30 +190,32 @@ export function Settings({ onBack }: SettingsProps) {
                 </div>
 
                 {/* Accent Color */}
-                <div className="flex flex-col gap-1.5">
-                  <span className="font-medium text-sm">{t('settings.appearance.accentColor')}</span>
-                  <span className="text-xs text-muted-foreground mb-2">
-                    {t('settings.appearance.accentColorDesc')}
-                  </span>
-                  <div className="flex flex-wrap gap-3">
-                    {Object.values(accentColors).map((accent) => (
-                      <button
-                        key={accent.id}
-                        onClick={() => setAccentColor(accent.id)}
-                        className={cn(
-                          "w-8 h-8 rounded-full border-2 transition-all flex items-center justify-center",
-                          accentColorId === accent.id ? "border-foreground" : "border-transparent hover:scale-110"
-                        )}
-                        style={{ background: `hsl(${accent.color})` }}
-                        title={accent.name}
-                      >
-                        {accentColorId === accent.id && (
-                          <Check className="w-4 h-4 text-white drop-shadow-md" strokeWidth={3} />
-                        )}
-                      </button>
-                    ))}
+                {!baseThemes[baseThemeId]?.colorOverrides && (
+                  <div className="flex flex-col gap-1.5">
+                    <span className="font-medium text-sm">{t('settings.appearance.accentColor')}</span>
+                    <span className="text-xs text-muted-foreground mb-2">
+                      {t('settings.appearance.accentColorDesc')}
+                    </span>
+                    <div className="flex flex-wrap gap-3">
+                      {Object.values(accentColors).map((accent) => (
+                        <button
+                          key={accent.id}
+                          onClick={() => setAccentColor(accent.id)}
+                          className={cn(
+                            "w-8 h-8 rounded-full border-2 transition-all flex items-center justify-center",
+                            accentColorId === accent.id ? "border-foreground" : "border-transparent hover:scale-110"
+                          )}
+                          style={{ background: `hsl(${accent.color})` }}
+                          title={accent.name}
+                        >
+                          {accentColorId === accent.id && (
+                            <Check className="w-4 h-4 text-white drop-shadow-md" strokeWidth={3} />
+                          )}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
 
               </div>
             </CardContent>

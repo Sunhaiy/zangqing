@@ -39,19 +39,19 @@ const generateThemeColors = (baseId: BaseThemeId, accentId: AccentColorId): Them
 
   return {
     ...base.colors,
-    primary: accent.color,
-    primaryForeground: accent.foreground,
-    ring: accent.color,
+    primary: base.colorOverrides?.primary ?? accent.color,
+    primaryForeground: base.colorOverrides?.primaryForeground ?? accent.foreground,
+    ring: base.colorOverrides?.ring ?? accent.color,
     // Use accent color for accent tokens as well for consistency in this design
-    accent: base.colors.secondary, // Keep secondary as accent background usually
-    accentForeground: base.colors.secondaryForeground,
+    accent: base.colorOverrides?.accent ?? base.colors.secondary, // Keep secondary as accent background usually
+    accentForeground: base.colorOverrides?.accentForeground ?? base.colors.secondaryForeground,
 
     // We can also make 'accent' token use the color if we want colored accents, 
     // but usually 'accent' in shadcn/tailwind is for hover states of list items.
     // Hoppscotch uses the primary color for active states.
 
-    destructive: "0 84.2% 60.2%", // Standard red
-    destructiveForeground: "0 0% 98%",
+    destructive: base.colorOverrides?.destructive ?? "0 84.2% 60.2%", // Standard red
+    destructiveForeground: base.colorOverrides?.destructiveForeground ?? "0 0% 98%",
   };
 };
 

@@ -1,5 +1,5 @@
 
-export type BaseThemeId = 'light' | 'black';
+export type BaseThemeId = 'light' | 'black' | 'taxue' | 'coolBlack' | 'coolWhite' | 'cyberpunk' | 'lihua' | 'zangqing' | 'amber';
 export type AccentColorId = 'green' | 'teal' | 'blue' | 'indigo' | 'purple' | 'yellow' | 'orange' | 'red' | 'pink';
 
 export type TerminalThemeId = 'default' | 'dracula' | 'tokyoNight' | 'nord' | 'oneDarkPro' | 'catppuccinMocha' | 'monokaiPro' | 'solarizedDark' | 'everforestDark' | 'rosePine' | 'adventureTime' | 'afterglow' | 'alienBlood' | 'argonaut' | 'bounds' | 'cyberpunk' | 'pixel' | 'zangqing' | 'githubLight' | 'solarizedLight' | 'taxuexunmei' | 'rosePineDown' | 'catppuccinLatte' | 'oneLight' | 'everforestLight' | 'nordLight' | 'atomOneLight';
@@ -44,6 +44,7 @@ export interface BaseTheme {
     border: string;
     input: string;
   };
+  colorOverrides?: Partial<Omit<ThemeColors, keyof BaseTheme['colors']>>;
 }
 
 export interface AccentColor {
@@ -90,6 +91,202 @@ export const baseThemes: Record<BaseThemeId, BaseTheme> = {
       mutedForeground: "0 0% 60%",
       border: "0 0% 12%",
       input: "0 0% 12%",
+    }
+  },
+  taxue: {
+    id: 'taxue',
+    name: '踏雪寻梅',
+    type: 'light',
+    colors: {
+      background: "0 0% 98%",
+      foreground: "240 10% 20%",
+      card: "0 0% 100%",
+      cardForeground: "240 10% 20%",
+      popover: "0 0% 100%",
+      popoverForeground: "240 10% 20%",
+      secondary: "0 0% 94%",
+      secondaryForeground: "240 10% 20%",
+      muted: "0 0% 94%",
+      mutedForeground: "0 0% 45%",
+      border: "0 0% 85%",
+      input: "0 0% 85%",
+    },
+    colorOverrides: {
+      primary: "340 70% 45%",
+      primaryForeground: "0 0% 100%",
+      accent: "340 30% 92%",
+      accentForeground: "340 70% 45%",
+      destructive: "0 80% 50%",
+      destructiveForeground: "0 0% 100%",
+      ring: "340 70% 45%",
+    }
+  },
+  coolBlack: {
+    id: 'coolBlack',
+    name: '炫酷黑',
+    type: 'dark',
+    colors: {
+      background: "0 0% 0%",
+      foreground: "0 0% 100%",
+      card: "0 0% 4%",
+      cardForeground: "0 0% 100%",
+      popover: "0 0% 6%",
+      popoverForeground: "0 0% 100%",
+      secondary: "0 0% 12%",
+      secondaryForeground: "0 0% 98%",
+      muted: "0 0% 12%",
+      mutedForeground: "0 0% 65%",
+      border: "0 0% 15%",
+      input: "0 0% 15%",
+    },
+    colorOverrides: {
+      primary: "210 100% 50%",
+      primaryForeground: "0 0% 100%",
+      accent: "0 0% 15%",
+      accentForeground: "0 0% 100%",
+      destructive: "0 84% 45%",
+      destructiveForeground: "0 0% 100%",
+      ring: "210 100% 50%",
+    }
+  },
+  coolWhite: {
+    id: 'coolWhite',
+    name: '炫酷白',
+    type: 'light',
+    colors: {
+      background: "0 0% 100%",
+      foreground: "0 0% 5%",
+      card: "0 0% 98%",
+      cardForeground: "0 0% 5%",
+      popover: "0 0% 100%",
+      popoverForeground: "0 0% 5%",
+      secondary: "0 0% 94%",
+      secondaryForeground: "0 0% 10%",
+      muted: "0 0% 94%",
+      mutedForeground: "0 0% 40%",
+      border: "0 0% 88%",
+      input: "0 0% 88%",
+    },
+    colorOverrides: {
+      primary: "220 90% 10%",
+      primaryForeground: "0 0% 100%",
+      accent: "220 20% 94%",
+      accentForeground: "220 90% 10%",
+      destructive: "0 84% 45%",
+      destructiveForeground: "0 0% 100%",
+      ring: "220 90% 10%",
+    }
+  },
+  cyberpunk: {
+    id: 'cyberpunk',
+    name: '赛博朋克 2077',
+    type: 'dark',
+    colors: {
+      background: "0 0% 6%",
+      foreground: "180 10% 90%",
+      card: "0 0% 10%",
+      cardForeground: "180 10% 90%",
+      popover: "0 0% 14%",
+      popoverForeground: "180 10% 90%",
+      secondary: "0 0% 16%",
+      secondaryForeground: "0 0% 95%",
+      muted: "0 0% 16%",
+      mutedForeground: "180 10% 60%",
+      border: "0 0% 25%",
+      input: "0 0% 25%",
+    },
+    colorOverrides: {
+      primary: "56 97% 51%",
+      primaryForeground: "0 0% 5%",
+      accent: "180 50% 15%",
+      accentForeground: "180 100% 50%",
+      destructive: "348 100% 58%",
+      destructiveForeground: "0 0% 100%",
+      ring: "56 97% 51%",
+    }
+  },
+  lihua: {
+    id: 'lihua',
+    name: '梨花海',
+    type: 'light',
+    colors: {
+      background: "45 20% 98%",
+      foreground: "25 20% 25%",
+      card: "0 0% 100%",
+      cardForeground: "25 20% 25%",
+      popover: "0 0% 100%",
+      popoverForeground: "25 20% 25%",
+      secondary: "45 30% 92%",
+      secondaryForeground: "25 20% 25%",
+      muted: "45 30% 92%",
+      mutedForeground: "25 10% 55%",
+      border: "45 20% 85%",
+      input: "45 20% 85%",
+    },
+    colorOverrides: {
+      primary: "150 40% 60%",
+      primaryForeground: "0 0% 100%",
+      accent: "345 50% 90%",
+      accentForeground: "345 60% 40%",
+      destructive: "0 70% 60%",
+      destructiveForeground: "0 0% 100%",
+      ring: "150 40% 60%",
+    }
+  },
+  zangqing: {
+    id: 'zangqing',
+    name: '藏青',
+    type: 'dark',
+    colors: {
+      background: "225 40% 8%",
+      foreground: "210 20% 90%",
+      card: "225 35% 12%",
+      cardForeground: "210 20% 90%",
+      popover: "225 35% 15%",
+      popoverForeground: "210 20% 90%",
+      secondary: "225 30% 20%",
+      secondaryForeground: "210 20% 95%",
+      muted: "225 30% 20%",
+      mutedForeground: "215 15% 60%",
+      border: "225 30% 25%",
+      input: "225 30% 25%",
+    },
+    colorOverrides: {
+      primary: "215 90% 65%",
+      primaryForeground: "0 0% 100%",
+      accent: "180 70% 25%",
+      accentForeground: "180 80% 85%",
+      destructive: "350 70% 50%",
+      destructiveForeground: "0 0% 100%",
+      ring: "215 90% 65%",
+    }
+  },
+  amber: {
+    id: 'amber',
+    name: '琥珀终端',
+    type: 'dark',
+    colors: {
+      background: "20 10% 5%",
+      foreground: "35 100% 55%",
+      card: "20 10% 8%",
+      cardForeground: "35 100% 55%",
+      popover: "20 10% 10%",
+      popoverForeground: "35 100% 55%",
+      secondary: "35 50% 15%",
+      secondaryForeground: "35 100% 65%",
+      muted: "20 10% 15%",
+      mutedForeground: "35 40% 40%",
+      border: "35 40% 20%",
+      input: "35 40% 20%",
+    },
+    colorOverrides: {
+      primary: "35 100% 50%",
+      primaryForeground: "20 10% 5%",
+      accent: "35 60% 20%",
+      accentForeground: "35 100% 70%",
+      destructive: "0 80% 50%",
+      destructiveForeground: "20 10% 5%",
+      ring: "35 100% 50%",
     }
   }
 };

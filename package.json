@@ -23,11 +23,33 @@
       "dist-electron/**/*"
     ],
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "public/icon.ico"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "public/icon.icns"
     },
     "linux": {
-      "target": "AppImage"
-    }
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
+      "icon": "public/icon.png"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "SUNHIY",
+        "repo": "sshtool"
+      }
+    ]
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
