@@ -315,7 +315,10 @@ export class SSHManager {
                         console.error(`sftp.readFile failed for ${remotePath}:`, err);
                         reject(err);
                     } else {
-                        resolve(data.toString());
+                        // Return base64 for image files so the renderer can create a data URL
+                        const ext = remotePath.split('.').pop()?.toLowerCase() ?? '';
+                        const isImage = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff', 'tif'].includes(ext);
+                        resolve(isImage ? data.toString('base64') : data.toString('utf8'));
                     }
                 });
             });

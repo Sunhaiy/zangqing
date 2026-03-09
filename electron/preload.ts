@@ -31,6 +31,18 @@ contextBridge.exposeInMainWorld('electron', {
   openDialog: () => ipcRenderer.invoke('dialog-open'),
   saveDialog: (defaultName: string) => ipcRenderer.invoke('dialog-save', defaultName),
 
+  // AI request proxy — routes through main process to avoid renderer CORS
+  aiFetch: (opts: { url: string; method: string; headers: Record<string, string>; body: string }) =>
+    ipcRenderer.invoke('ai-fetch', opts),
+  aiFetchStream: (opts: { url: string; method: string; headers: Record<string, string>; body: string; streamId: string }) =>
+    ipcRenderer.invoke('ai-fetch-stream', opts),
+  onAiFetchStreamChunk: (callback: (payload: { streamId: string; chunk?: string; error?: string; done: boolean }) => void) => {
+    const sub = (_event: any, payload: any) => callback(payload);
+    ipcRenderer.on('ai-fetch-stream-chunk', sub);
+    return () => ipcRenderer.removeListener('ai-fetch-stream-chunk', sub);
+  },
+
+
   startMonitoring: (id: string) => ipcRenderer.send('start-monitoring', id),
   stopMonitoring: (id: string) => ipcRenderer.send('stop-monitoring', id),
   onStatsUpdate: (callback: (event: any, payload: { id: string, stats: any }) => void) => {

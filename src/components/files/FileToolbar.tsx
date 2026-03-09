@@ -11,7 +11,7 @@ interface Props {
     onUp: () => void;
     onHome: () => void;
     onRefresh: () => void;
-    onUpload: () => void;
+    onUpload: (file?: File) => void;
     onNavigate: (path: string) => void;
 }
 
@@ -19,12 +19,30 @@ export function FileToolbar({ currentPath, loading, onUp, onHome, onRefresh, onU
     const { bookmarks, toggleBookmark } = useSettingsStore();
     const [showBookmarks, setShowBookmarks] = useState(false);
     const bmBtnRef = useRef<HTMLButtonElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const isBookmarked = bookmarks.includes(currentPath);
 
     const btn = 'p-1.5 rounded-md transition-colors focus:outline-none text-muted-foreground hover:bg-accent hover:text-accent-foreground';
 
+    const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            onUpload(file);
+            // Reset so the same file can be re-uploaded
+            e.target.value = '';
+        }
+    };
+
     return (
         <div className="border-b border-border flex flex-col bg-transparent shrink-0">
+            {/* Hidden file input */}
+            <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                onChange={handleFileInputChange}
+            />
+
             {/* Row 1: Nav controls */}
             <div className="h-9 flex items-center gap-0.5 px-2">
                 <button onClick={onUp} className={btn} title="向上一级"><ArrowUp className="w-3.5 h-3.5" /></button>
@@ -86,7 +104,11 @@ export function FileToolbar({ currentPath, loading, onUp, onHome, onRefresh, onU
                     )}
                 </div>
                 <div className="flex-1" />
-                <button onClick={onUpload} className={cn(btn, 'flex items-center gap-1 text-xs px-2')} title="上传文件">
+                <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className={cn(btn, 'flex items-center gap-1 text-xs px-2')}
+                    title="上传文件"
+                >
                     <Upload className="w-3.5 h-3.5" />
                     <span className="hidden sm:inline">上传</span>
                 </button>

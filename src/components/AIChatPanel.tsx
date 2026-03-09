@@ -621,7 +621,7 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
             )}
 
             {/* Input Area */}
-            <div className="border-t border-border p-3 bg-background">
+            <div className="border-t border-border p-3 bg-background shrink-0">
                 {/* Mode & Model selector bar — horizontal */}
                 <div className="flex items-center gap-2 mb-2">
                     {/* Control Mode Selector */}

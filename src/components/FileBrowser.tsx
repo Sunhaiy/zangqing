@@ -11,7 +11,7 @@ import { ToastNotification } from './files/ToastNotification';
 import { InputDialog } from './files/InputDialog';
 import { ImageViewer } from './files/ImageViewer';
 import { FileEditor } from './FileEditor';
-import { Upload } from 'lucide-react';
+import { Upload, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface Props {
@@ -135,7 +135,7 @@ export function FileBrowser({ connectionId, isConnected = true }: Props) {
         onUp={fb.navigateUp}
         onHome={() => fb.navigateTo('/')}
         onRefresh={fb.refresh}
-        onUpload={fb.uploadFile}
+        onUpload={(file) => fb.uploadFile(file)}
         onNavigate={fb.navigateTo}
       />
 
@@ -215,6 +215,16 @@ export function FileBrowser({ connectionId, isConnected = true }: Props) {
 
       {/* Toasts */}
       <ToastNotification toasts={fb.toasts} onDismiss={fb.dismissToast} />
+
+      {/* File-open loading overlay */}
+      {fb.openingFile && (
+        <div className="absolute inset-0 z-[60] flex items-center justify-center bg-background/50 backdrop-blur-[2px] pointer-events-none">
+          <div className="flex flex-col items-center gap-3 bg-card border border-border rounded-xl px-6 py-5 shadow-xl pointer-events-auto">
+            <Loader2 className="w-7 h-7 text-primary animate-spin" />
+            <span className="text-sm text-muted-foreground">正在加载文件...</span>
+          </div>
+        </div>
+      )}
 
       {/* Image viewer */}
       {fb.openFile?.kind === 'image' && (

@@ -73,11 +73,27 @@ class AIService {
             if (cleanBase.endsWith('/api/chat')) return cleanBase;
             return `${cleanBase}/api/chat`;
         } else {
-            if (cleanBase.endsWith('/v1/chat/completions')) return cleanBase;
-            // Handle common base URL suffix provided by many proxies
-            if (cleanBase.endsWith('/v1')) return `${cleanBase}/chat/completions`;
+            if (cleanBase.endsWith('/chat/completions')) return cleanBase;
+            // /v1 or /v3 (Volcengine CodePlan uses /v3) — append /chat/completions
+            if (/\/v\d+$/.test(cleanBase)) return `${cleanBase}/chat/completions`;
             return `${cleanBase}/v1/chat/completions`;
         }
+    }
+
+    // Proxy fetch through Electron main process to avoid renderer CORS restrictions.
+    // Falls back to native fetch in non-Electron environments (web/test).
+    private async proxyFetch(url: string, options: { method: string; headers: Record<string, string>; body: string }): Promise<{ ok: boolean; status: number; text(): Promise<string> }> {
+        const el = (window as any).electron;
+        if (el?.aiFetch) {
+            const result = await el.aiFetch({ url, ...options });
+            return {
+                ok: result.ok,
+                status: result.status,
+                text: async () => result.body,
+            };
+        }
+        // Fallback: direct fetch (works in non-Electron / dev server with CORS)
+        return fetch(url, options);
     }
 
     // Non-streaming completion
@@ -132,7 +148,7 @@ class AIService {
             stream: false
         };
 
-        const response = await fetch(endpoint, {
+        const response = await this.proxyFetch(endpoint, {
             method: 'POST',
             headers,
             body: JSON.stringify(requestBody)
@@ -143,7 +159,7 @@ class AIService {
             throw new Error(`AI request failed: ${error}`);
         }
 
-        const data = await response.json();
+        const data = JSON.parse(await response.text());
 
         // Ollama response format is different
         if (isOllama) {
@@ -208,7 +224,7 @@ class AIService {
             stream: true
         };
 
-        const response = await fetch(endpoint, {
+        const response = await this.proxyFetch(endpoint, {
             method: 'POST',
             headers,
             body: JSON.stringify(requestBody)
@@ -219,40 +235,20 @@ class AIService {
             throw new Error(`AI request failed: ${error}`);
         }
 
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error('No response body');
-
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    const data = line.slice(6);
-                    if (data === '[DONE]') return;
-
-                    try {
-                        const parsed = JSON.parse(data);
-
-                        // Ollama format is slightly different 
-                        const content = isOllama
-                            ? parsed.message?.content
-                            : parsed.choices?.[0]?.delta?.content;
-
-                        if (content) {
-                            yield content;
-                        }
-                    } catch (e) {
-                        // Ignore parse errors for incomplete JSON
-                    }
-                }
+        // For streaming, parse the full SSE body returned by proxyFetch
+        const fullBody = await response.text();
+        const lines = fullBody.split('\n');
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') return;
+                try {
+                    const parsed = JSON.parse(data);
+                    const content = isOllama
+                        ? parsed.message?.content
+                        : parsed.choices?.[0]?.delta?.content;
+                    if (content) yield content;
+                } catch { }
             }
         }
     }
@@ -304,7 +300,7 @@ class AIService {
             tools: request.tools,
         };
 
-        const response = await fetch(endpoint, {
+        const response = await this.proxyFetch(endpoint, {
             method: 'POST',
             headers,
             body: JSON.stringify(requestBody)
@@ -343,7 +339,7 @@ class AIService {
             throw new Error(`AI request failed: ${errorText}`);
         }
 
-        const data = await response.json();
+        const data = JSON.parse(await response.text());
         const choice = data.choices?.[0];
         const message = choice?.message;
         const usage = data.usage ? {

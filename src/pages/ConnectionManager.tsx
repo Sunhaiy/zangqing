@@ -45,8 +45,10 @@ export function ConnectionManager({ onConnect, onNavigate, activeSessions = 0 }:
       name,
       username,
     };
-    const next = data.id
-      ? connections.map(c => c.id === data.id ? conn : c)
+    // Check if a connection with this ID already exists in the list
+    const exists = connections.some(c => c.id === conn.id);
+    const next = exists
+      ? connections.map(c => c.id === conn.id ? conn : c)
       : [...connections, conn];
     setConnections(next);
     await (window as any).electron.storeSet('connections', next);

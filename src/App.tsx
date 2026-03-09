@@ -174,9 +174,11 @@ function App() {
           onNewSession={() => setShowNewConnModal(true)}
         />
 
-        <div className="flex-1 overflow-hidden relative flex flex-col">
+        <div className="flex-1 overflow-hidden relative flex flex-col min-h-0">
+
+          {/* ── Connections page: true flex child so the parent always has height ── */}
           {page === 'connections' && (
-            <div className="absolute inset-0 z-50" style={{ backgroundColor: 'hsl(var(--background) / var(--app-opacity, 0.9))' }}>
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0">
               {connError && (
                 <div className="mx-4 mt-3 rounded-lg overflow-hidden ring-1 ring-red-500/20 bg-red-500/[0.06] backdrop-blur-sm animate-in slide-in-from-top-2 duration-300">
                   <div className="flex items-start gap-3 px-4 py-3">
@@ -206,29 +208,30 @@ function App() {
             </div>
           )}
 
+          {/* ── Settings page ── */}
           {page === 'settings' && (
-            <div className="absolute inset-0 z-50" style={{ backgroundColor: 'hsl(var(--background) / var(--app-opacity, 0.9))' }}>
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0">
               <Settings onBack={() => setPage(sessions.length > 0 ? 'workspace' : 'connections')} />
             </div>
           )}
 
-          {/* Workspace — always mounted so terminal state is preserved.
-            Settings and Connections pages are absolute overlays at z-50,
-            so they appear on top without unmounting the workspace below. */}
+          {/* ── Workspace: position:absolute so it never affects parent height.
+              display:none removes it from GPU compositor (no Electron bleed-through).
+              Sessions stay mounted so xterm state is preserved across page switches. ── */}
           <div
-            className="flex-1 relative overflow-hidden flex flex-col"
-            style={{ visibility: page === 'workspace' && sessions.length > 0 ? 'visible' : 'hidden' }}
+            className="absolute inset-0 flex flex-col overflow-hidden"
+            style={{ display: page === 'workspace' && sessions.length > 0 ? 'flex' : 'none' }}
           >
-            <div className="flex-1 relative overflow-hidden">
+            <div className="flex-1 relative overflow-hidden" style={{ height: '100%' }}>
               {/* Render ALL sessions to preserve state, but hide inactive ones */}
               {sessions.map(session => (
                 <div
                   key={session.uniqueId}
                   className="absolute inset-0"
                   style={{
-                    visibility: session.uniqueId === activeSessionId ? 'visible' : 'hidden',
-                    zIndex: session.uniqueId === activeSessionId ? 10 : 0,
-                    background: 'transparent'
+                    display: session.uniqueId === activeSessionId ? 'flex' : 'none',
+                    flexDirection: 'column',
+                    height: '100%'
                   }}
                 >
                   {/* TerminalSlotProvider wraps both layouts so the single TerminalView
@@ -245,19 +248,16 @@ function App() {
                       {/* Normal Mode Layout */}
                       <div
                         className="absolute inset-0"
-                        style={{
-                          visibility: workspaceMode === 'normal' ? 'visible' : 'hidden',
-                          zIndex: workspaceMode === 'normal' ? 10 : 0
-                        }}
+                        style={{ visibility: workspaceMode === 'normal' ? 'visible' : 'hidden', height: '100%' }}
                       >
                         <ResizableLayout
                           leftContent={
-                            <div className="h-full flex flex-col bg-card/50 rounded-lg border border-border overflow-hidden">
+                            <div className="h-full flex flex-col bg-card rounded-lg border border-border overflow-hidden">
                               <PanelSlotConsumer panel="files" active={workspaceMode === 'normal'} />
                             </div>
                           }
                           middleContent={
-                            <div className="h-full bg-card/50 rounded-lg border border-border flex flex-col overflow-hidden relative">
+                            <div className="h-full bg-card rounded-lg border border-border flex flex-col overflow-hidden relative">
                               <div className="flex-1 min-h-0 relative overflow-hidden">
                                 {/* TerminalSlotConsumer: placeholder that adopts the stable terminal div */}
                                 {workspaceMode === 'normal' && <TerminalSlotConsumer />}
@@ -270,7 +270,7 @@ function App() {
                                 />
                               )}
                               {aiEnabled && (
-                                <div className="flex-shrink-0 border-t border-border p-1.5 bg-transparent">
+                                <div className="flex-shrink-0 border-t border-border p-1.5 bg-card">
                                   <AICommandInput
                                     onCommandGenerated={(cmd) => {
                                       const eWindow = window as any;
@@ -282,7 +282,7 @@ function App() {
                             </div>
                           }
                           rightContent={
-                            <div className="h-full bg-card/50 rounded-lg border border-border overflow-hidden">
+                            <div className="h-full bg-card rounded-lg border border-border overflow-hidden">
                               <ErrorBoundary name="RightPanel">
                                 <RightPanel connectionId={session.uniqueId} isConnected={session.status === 'connected'} isActive={workspaceMode === 'normal'} />
                               </ErrorBoundary>
@@ -294,10 +294,7 @@ function App() {
                       {/* Agent Mode Layout */}
                       <div
                         className="absolute inset-0"
-                        style={{
-                          visibility: workspaceMode === 'agent' ? 'visible' : 'hidden',
-                          zIndex: workspaceMode === 'agent' ? 10 : 0
-                        }}
+                        style={{ visibility: workspaceMode === 'agent' ? 'visible' : 'hidden', height: '100%' }}
                       >
                         <AgentLayout
                           connectionId={session.uniqueId}
@@ -333,8 +330,9 @@ function App() {
             const name = data.name || (data.host ? `${username}@${data.host}` : 'New Server');
             const conn: SSHConnection = { ...data, id: data.id || Date.now().toString(), name, username };
             try {
-              const stored = await (window as any).electron.storeGet('connections') || [];
-              await (window as any).electron.storeSet('connections', [...stored, conn]);
+              const stored = await (window as any).electron.storeGet('connections');
+              const existing = Array.isArray(stored) ? stored : [];
+              await (window as any).electron.storeSet('connections', [...existing, conn]);
             } catch { }
             await handleConnect(conn);
           }}

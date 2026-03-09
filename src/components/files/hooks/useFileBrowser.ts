@@ -22,6 +22,7 @@ export function useFileBrowser(connectionId: string) {
     const [currentPath, setCurrentPath] = useState('/');
     const [files, setFiles] = useState<FileEntry[]>([]);
     const [loading, setLoading] = useState(false);
+    const [openingFile, setOpeningFile] = useState(false);
     const [hasLoaded, setHasLoaded] = useState(false);
     const [openFile, setOpenFile] = useState<FileOpenResult | null>(null);
     const [toasts, setToasts] = useState<Toast[]>([]);
@@ -111,7 +112,7 @@ export function useFileBrowser(connectionId: string) {
             return;
         }
 
-        setLoading(true);
+        setOpeningFile(true);
         try {
             const content = await el.electron.sftpReadFile(connectionId, path);
             if (kind === 'image') {
@@ -125,7 +126,7 @@ export function useFileBrowser(connectionId: string) {
         } catch (err: any) {
             pushToast(`无法打开文件: ${err?.message ?? err}`);
         } finally {
-            setLoading(false);
+            setOpeningFile(false);
         }
     }, [connectionId, currentPath, loadFiles, pushToast]);
 
@@ -212,16 +213,50 @@ export function useFileBrowser(connectionId: string) {
     }, [connectionId, currentPath, transferQueue, pushToast]);
 
     // ── Upload ───────────────────────────────────────────────────────────────────
-    const uploadFile = useCallback(async (localPath?: string) => {
+    const uploadFile = useCallback(async (fileOrPath?: File | string) => {
         const el = window as any;
-        const filePath = localPath ?? await el.electron.openDialog();
+
+        // Case 1: File object from browser file input
+        if (fileOrPath instanceof File) {
+            const file = fileOrPath;
+            const filename = file.name;
+            const remotePath = joinPath(currentPath, filename);
+            const tid = transferQueue.addTransfer(filename, 'upload');
+            try {
+                // Read file as base64 and upload via buffer IPC
+                const buffer = await file.arrayBuffer();
+                const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+                if (typeof el.electron?.sftpUploadBuffer === 'function') {
+                    await el.electron.sftpUploadBuffer(connectionId, base64, remotePath);
+                } else {
+                    // Fallback: write via path if electron exposed the file path
+                    const localPath = (file as any).path;
+                    if (localPath) {
+                        await el.electron.sftpUpload(connectionId, localPath, remotePath);
+                    } else {
+                        throw new Error('当前环境不支持通过文件对象上传，请尝试拖放文件');
+                    }
+                }
+                transferQueue.markDone(tid);
+                pathCacheRef.current[currentPath] = undefined as any;
+                await loadFiles(currentPath, true);
+            } catch (err: any) {
+                transferQueue.markError(tid, err?.message ?? String(err));
+                pushToast(`上传失败: ${err?.message ?? err}`);
+            }
+            return;
+        }
+
+        // Case 2: Local path string (from drag & drop or legacy call)
+        const el2 = window as any;
+        const filePath = fileOrPath ?? await el2.electron.openDialog();
         if (!filePath) return;
 
         const filename = (filePath as string).split(/[\\/]/).pop() ?? 'file';
         const remotePath = joinPath(currentPath, filename);
         const tid = transferQueue.addTransfer(filename, 'upload');
         try {
-            await el.electron.sftpUpload(connectionId, filePath, remotePath);
+            await el2.electron.sftpUpload(connectionId, filePath, remotePath);
             transferQueue.markDone(tid);
             pathCacheRef.current[currentPath] = undefined as any;
             await loadFiles(currentPath, true);
@@ -235,13 +270,18 @@ export function useFileBrowser(connectionId: string) {
     const uploadDroppedFiles = useCallback(async (nativeFiles: File[]) => {
         for (const file of nativeFiles) {
             const localPath = (file as any).path;
-            if (localPath) await uploadFile(localPath);
+            // Prefer path-based upload (Electron), fall back to File object
+            if (localPath) {
+                await uploadFile(localPath);
+            } else {
+                await uploadFile(file);
+            }
         }
     }, [uploadFile]);
 
     return {
         // State
-        currentPath, files, loading, hasLoaded, openFile, toasts,
+        currentPath, files, loading, openingFile, hasLoaded, openFile, toasts,
         transfers: transferQueue.transfers,
         activeTransferCount: transferQueue.activeCount,
         // File ops

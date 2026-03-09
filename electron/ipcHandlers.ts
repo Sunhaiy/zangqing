@@ -7,6 +7,47 @@ const store = new Store();
 const sshManager = new SSHManager(store);
 
 export function setupIpcHandlers() {
+  // ── Universal AI fetch proxy (bypasses renderer CORS) ────────────────────────
+  // Non-streaming: returns { ok, status, body }
+  ipcMain.handle('ai-fetch', async (_event, { url, method, headers, body }: {
+    url: string; method: string; headers: Record<string, string>; body: string;
+  }) => {
+    try {
+      const res = await fetch(url, { method, headers, body });
+      const text = await res.text();
+      return { ok: res.ok, status: res.status, body: text };
+    } catch (err: any) {
+      return { ok: false, status: 0, body: err?.message ?? String(err) };
+    }
+  });
+
+  // Streaming: sends chunks back via 'ai-fetch-stream-chunk' events on the sender
+  ipcMain.handle('ai-fetch-stream', async (event, { url, method, headers, body, streamId }: {
+    url: string; method: string; headers: Record<string, string>; body: string; streamId: string;
+  }) => {
+    try {
+      const res = await fetch(url, { method, headers, body });
+      if (!res.ok || !res.body) {
+        const text = await res.text();
+        event.sender.send('ai-fetch-stream-chunk', { streamId, error: text, done: true });
+        return;
+      }
+      const reader = (res.body as any).getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          event.sender.send('ai-fetch-stream-chunk', { streamId, chunk: '', done: true });
+          break;
+        }
+        const chunk = decoder.decode(value, { stream: true });
+        event.sender.send('ai-fetch-stream-chunk', { streamId, chunk, done: false });
+      }
+    } catch (err: any) {
+      event.sender.send('ai-fetch-stream-chunk', { streamId, error: err?.message ?? String(err), done: true });
+    }
+  });
+
   // Store
   ipcMain.handle('store-get', (event, key) => store.get(key));
   ipcMain.handle('store-set', (event, key, value) => store.set(key, value));

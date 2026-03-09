@@ -178,11 +178,11 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
       get().setTerminalTheme('default');
     }
 
-    // Opacity
-    if (savedOpacity) {
+    // Opacity — default is now 1.0 (fully opaque). Reset old 0.9 default to 1.0.
+    if (savedOpacity && parseFloat(savedOpacity) > 0.9) {
       get().setOpacity(parseFloat(savedOpacity));
     } else {
-      get().setOpacity(0.9);
+      get().setOpacity(1.0);
     }
   }
 }));
