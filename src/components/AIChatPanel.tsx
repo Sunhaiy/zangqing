@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect, KeyboardEvent, memo } from 'react';
 import { Bot, User, Send, Loader2, Sparkles, ChevronDown, ChevronRight, Terminal, Square, Zap, Shield, ShieldCheck, Check, X, Cpu, FileText, FolderOpen, Brain, Pencil, ListChecks, ChevronUp, CheckCircle2, XCircle, Circle, Target } from 'lucide-react';
 import { aiService } from '../services/aiService';
-import { AI_SYSTEM_PROMPTS, AGENT_TOOLS, AIProviderProfile, AI_PROVIDER_CONFIGS, PlanState, PlanStep } from '../shared/aiTypes';
+import { AI_SYSTEM_PROMPTS, AGENT_TOOLS, AIProviderProfile, AI_PROVIDER_CONFIGS, PlanState } from '../shared/aiTypes';
 import { useSettingsStore } from '../store/settingsStore';
 import { useTranslation } from '../hooks/useTranslation';
 import { cn } from '../lib/utils';
@@ -169,6 +169,35 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
             textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 120) + 'px';
         }
     }, [input]);
+
+    // Subscribe to main-process Agent plan push events (re-bind when tab changes)
+    useEffect(() => {
+        const eWin = window as any;
+        const cleanPlan = eWin.electron?.onAgentPlanUpdate?.(
+            ({ sessionId, planState: ps, planPhase }: any) => {
+                if (sessionId !== connectionId) return;
+                setPlanState(ps);
+                planStateRef.current = ps;
+                setPlanStatus(planPhase);
+                if (['done', 'stopped', 'paused'].includes(planPhase)) {
+                    setIsLoading(false);
+                    isLoadingRef.current = false;
+                }
+            });
+        const cleanMsg = eWin.electron?.onAgentPushMsg?.(
+            ({ sessionId, message }: any) => {
+                if (sessionId !== connectionId) return;
+                onMessagesChange([...latestMessagesRef.current, message]);
+            });
+        const cleanUpd = eWin.electron?.onAgentUpdateMsg?.(
+            ({ sessionId, messageId, updates }: any) => {
+                if (sessionId !== connectionId) return;
+                onMessagesChange(latestMessagesRef.current.map((m: any) =>
+                    m.id === messageId ? { ...m, ...updates } : m));
+            });
+        return () => { cleanPlan?.(); cleanMsg?.(); cleanUpd?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [connectionId]);
 
     // Execute a command via SSH exec IPC and return result
     // Auto-retries up to 5 times on connection errors, attempting to reconnect between tries.
@@ -534,235 +563,6 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
     // ── Plan Mode v2: Planner / Executor / Assessor / Replanner ─────────────
     const getSelectedProfile = () => aiProfiles.find(p => p.id === (agentProfileId || activeProfileId));
 
-    const callPlanner = async (goal: string): Promise<PlanState | null> => {
-        try {
-            const response = await aiService.completeWithTools({
-                messages: [
-                    { role: 'system', content: AI_SYSTEM_PROMPTS.planner },
-                    { role: 'user', content: goal },
-                ],
-                tools: [],
-                temperature: 0.3,
-                overrideModel: agentModel || undefined,
-                overrideProfile: getSelectedProfile() || undefined,
-            });
-            const raw = (response.content || '').trim().replace(/^```[a-z]*\n?|```$/g, '').trim();
-            const state = JSON.parse(raw) as PlanState;
-            if (!state.global_goal || !Array.isArray(state.plan) || state.plan.length === 0) throw new Error('invalid plan');
-            return state;
-        } catch {
-            return null;
-        }
-    };
-
-    const callExecutor = async (state: PlanState, step: PlanStep): Promise<string> => {
-        const userContent = `全局目标：${state.global_goal}\n已知信息：${state.scratchpad || '无'}\n当前子任务：${step.description}`;
-        try {
-            const response = await aiService.completeWithTools({
-                messages: [
-                    { role: 'system', content: AI_SYSTEM_PROMPTS.executor },
-                    { role: 'user', content: userContent },
-                ],
-                tools: [],
-                temperature: 0.2,
-                overrideModel: agentModel || undefined,
-                overrideProfile: getSelectedProfile() || undefined,
-            });
-            // Strip any accidental markdown backticks
-            return (response.content || '').trim().replace(/^`{1,3}(?:bash|sh)?\n?|`{1,3}$/g, '').trim();
-        } catch {
-            return `echo "执行器生成命令失败: ${step.description}"`;
-        }
-    };
-
-    const callAssessor = async (
-        step: PlanStep,
-        result: { stdout: string; stderr: string; exitCode: number }
-    ): Promise<{ success: boolean; note: string; scratchpad_update?: string }> => {
-        const userContent = `子任务：${step.description}
-执行命令：${step.command || ''}
-退出码：${result.exitCode}
-stdout（前2000字）：${result.stdout.slice(0, 2000)}
-stderr（前1000字）：${result.stderr.slice(0, 1000)}`;
-        try {
-            const response = await aiService.completeWithTools({
-                messages: [
-                    { role: 'system', content: AI_SYSTEM_PROMPTS.assessor },
-                    { role: 'user', content: userContent },
-                ],
-                tools: [],
-                temperature: 0.1,
-                overrideModel: agentModel || undefined,
-                overrideProfile: getSelectedProfile() || undefined,
-            });
-            const raw = (response.content || '').trim().replace(/^```[a-z]*\n?|```$/g, '').trim();
-            return JSON.parse(raw);
-        } catch {
-            // Fallback: trust exit code
-            return { success: result.exitCode === 0, note: result.exitCode === 0 ? '命令执行成功' : `退出码 ${result.exitCode}` };
-        }
-    };
-
-    const callReplanner = async (state: PlanState, failedStep: PlanStep, errorOutput: string): Promise<PlanState | null> => {
-        const userContent = `当前任务状态：\n${JSON.stringify(state, null, 2)}\n\n失败步骤：${failedStep.description}\n错误输出：${errorOutput.slice(0, 1000)}`;
-        try {
-            const response = await aiService.completeWithTools({
-                messages: [
-                    { role: 'system', content: AI_SYSTEM_PROMPTS.replanner },
-                    { role: 'user', content: userContent },
-                ],
-                tools: [],
-                temperature: 0.4,
-                overrideModel: agentModel || undefined,
-                overrideProfile: getSelectedProfile() || undefined,
-            });
-            const raw = (response.content || '').trim().replace(/^```[a-z]*\n?|```$/g, '').trim();
-            const newState = JSON.parse(raw) as PlanState;
-            if (!newState.global_goal || !Array.isArray(newState.plan)) throw new Error('invalid replan');
-            return newState;
-        } catch {
-            return null;
-        }
-    };
-
-    const runPlanLoop = async (initialState: PlanState): Promise<'done' | 'stopped' | 'paused'> => {
-        const MAX_REPLAN = 3;
-        let state = { ...initialState, plan: initialState.plan.map(s => ({ ...s })) };
-        let replanCount = 0;
-        // Start with current chat messages so plan steps appear inline
-        let loopMessages = [...latestMessagesRef.current];
-
-        const syncState = (s: PlanState) => {
-            const snapshot = { ...s, plan: s.plan.map(p => ({ ...p })) };
-            planStateRef.current = snapshot;
-            setPlanState(snapshot);
-        };
-
-        while (isLoadingRef.current) {
-            const step = state.plan.find(s => s.status === 'pending');
-            if (!step) break;
-
-            // 1. Mark in_progress
-            step.status = 'in_progress';
-            syncState(state);
-
-            // 2. Executor generates command
-            const command = await callExecutor(state, step);
-
-            // 3. Detect __ASK_USER__ signal — pause and ask user
-            if (command.startsWith('__ASK_USER__:')) {
-                const question = command.slice('__ASK_USER__:'.length).trim();
-                const askMsg: AgentMessage = {
-                    id: `plan-ask-${Date.now()}`,
-                    role: 'assistant',
-                    content: question,
-                    timestamp: Date.now(),
-                };
-                loopMessages = [...loopMessages, askMsg];
-                onMessagesChange(loopMessages);
-                // Leave the step as in_progress so resume knows what to continue from
-                syncState(state);
-                return 'paused';
-            }
-
-            step.command = command;
-            syncState(state);
-
-            // 4. Inject tool-call message into chat (like runAgentLoop does)
-            const callMsgId = `plan-call-${Date.now()}`;
-            const callMsg: AgentMessage = {
-                id: callMsgId,
-                role: 'assistant',
-                content: step.description,
-                timestamp: Date.now(),
-                toolCall: { name: 'execute_ssh_command', command, status: 'pending' },
-            };
-            loopMessages = [...loopMessages, callMsg];
-            onMessagesChange(loopMessages);
-
-            // 5. Execute SSH command
-            let result: { stdout: string; stderr: string; exitCode: number };
-            try {
-                result = await execCommand(command);
-            } catch (err: any) {
-                step.status = 'failed';
-                step.error = `SSH 执行失败: ${err?.message || err}`;
-                loopMessages = loopMessages.map(m =>
-                    m.id === callMsgId ? { ...m, toolCall: { ...m.toolCall!, status: 'executed' as const } } : m
-                );
-                const errResultMsg: AgentMessage = {
-                    id: `plan-result-${Date.now()}`,
-                    role: 'tool',
-                    content: step.error,
-                    timestamp: Date.now(),
-                    toolCall: { name: 'execute_ssh_command', command, status: 'executed' },
-                    isError: true,
-                };
-                loopMessages = [...loopMessages, errResultMsg];
-                onMessagesChange(loopMessages);
-                syncState(state);
-                break;
-            }
-
-            // 6. Update call message to 'executed' + inject result
-            loopMessages = loopMessages.map(m =>
-                m.id === callMsgId ? { ...m, toolCall: { ...m.toolCall!, status: 'executed' as const } } : m
-            );
-            const resultContent = [result.stdout, result.stderr].filter(Boolean).join('\n').trim() || '(无输出)';
-            const resultMsg: AgentMessage = {
-                id: `plan-result-${Date.now()}`,
-                role: 'tool',
-                content: resultContent,
-                timestamp: Date.now(),
-                toolCall: { name: 'execute_ssh_command', command, status: 'executed' },
-            };
-            loopMessages = [...loopMessages, resultMsg];
-            onMessagesChange(loopMessages);
-
-            // 7. Assessor evaluates result
-            const assessment = await callAssessor(step, result);
-
-            if (assessment.success) {
-                step.status = 'completed';
-                step.result = assessment.note;
-                if (assessment.scratchpad_update) {
-                    state.scratchpad = [state.scratchpad, assessment.scratchpad_update].filter(Boolean).join('\n');
-                }
-                replanCount = 0;
-            } else {
-                step.status = 'failed';
-                step.error = assessment.note;
-                replanCount++;
-
-                if (replanCount > MAX_REPLAN) {
-                    syncState(state);
-                    break;
-                }
-
-                // Trigger Re-planner — inject a note into the chat
-                const replanNoteMsg: AgentMessage = {
-                    id: `plan-replan-${Date.now()}`,
-                    role: 'assistant',
-                    content: `步骤失败，正在重新规划：${assessment.note}`,
-                    timestamp: Date.now(),
-                };
-                loopMessages = [...loopMessages, replanNoteMsg];
-                onMessagesChange(loopMessages);
-
-                const newState = await callReplanner(state, step, result.stderr || result.stdout);
-                if (!newState) { syncState(state); break; }
-                state = { ...newState, plan: newState.plan.map(p => ({ ...p })) };
-            }
-
-            syncState(state);
-        }
-
-        // Determine why we exited: naturally done, or user stopped
-        const hasPending = state.plan.some(s => s.status === 'pending' || s.status === 'in_progress');
-        return hasPending ? 'stopped' : 'done';
-    };
-
-
     const handleSend = async () => {
         if (!input.trim() || isLoading) return;
 
@@ -797,43 +597,27 @@ stderr（前1000字）：${result.stderr.slice(0, 1000)}`;
         }
 
         if (planMode) {
-            // Plan mode: generate plan, then auto-execute immediately
+            // Plan mode: delegate to main-process AgentManager (fire-and-forget)
+            // isLoading is reset by the agent-plan-update push event (done/stopped/paused)
+            const profile = getSelectedProfile();
             setIsLoading(true);
             isLoadingRef.current = true;
-            try {
-                let result: 'done' | 'stopped' | 'paused';
 
-                if (isResuming) {
-                    // Resume a paused plan: inject user's answer into scratchpad
-                    const state = { ...planStateRef.current!, plan: planStateRef.current!.plan.map(s => ({ ...s })) };
-                    const askStep = state.plan.find(s => s.status === 'in_progress');
-                    if (askStep) {
-                        askStep.status = 'completed';
-                        askStep.result = `用户提供: ${userMsg.content}`;
-                    }
-                    state.scratchpad = [state.scratchpad, `用户提供: ${userMsg.content}`].filter(Boolean).join('\n');
-                    planStateRef.current = state;
-                    setPlanState(state);
-                    setPlanStatus('executing');
-                    result = await runPlanLoop(state);
-                } else {
-                    setPlanStatus('generating');
-                    const state = await callPlanner(userMsg.content);
-                    if (state) {
-                        setPlanStatus('executing');
-                        result = await runPlanLoop(state);
-                    } else {
-                        // Planner failed — fall back to direct agent loop
-                        setPlanStatus('idle');
-                        await runAgentLoop(updatedMessages);
-                        return;
-                    }
-                }
-
-                setPlanStatus(result); // 'done' | 'stopped' | 'paused'
-            } finally {
-                setIsLoading(false);
-                isLoadingRef.current = false;
+            if (isResuming) {
+                (window as any).electron?.agentPlanResume?.({
+                    sessionId: connectionId,
+                    userInput: userMsg.content,
+                    profile,
+                });
+            } else {
+                setPlanState(null);
+                planStateRef.current = null;
+                setPlanStatus('generating');
+                (window as any).electron?.agentPlanStart?.({
+                    sessionId: connectionId,
+                    goal: userMsg.content,
+                    profile,
+                });
             }
         } else {
             setIsLoading(true);
@@ -861,6 +645,9 @@ stderr（前1000字）：${result.stderr.slice(0, 1000)}`;
     const handleStop = () => {
         isLoadingRef.current = false;
         setIsLoading(false);
+        if (planMode) {
+            (window as any).electron?.agentPlanStop?.({ sessionId: connectionId });
+        }
     };
 
     return (

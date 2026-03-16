@@ -74,12 +74,31 @@ export class SSHManager {
         conn.shell((err, stream) => {
             if (err) { this.cleanup(sessionId); return reject(err); }
             this.streams.set(sessionId, stream);
+
+            // 16ms batch buffer (~60 fps) to prevent IPC floods from high-frequency output
+            let buf = '';
+            let flushTimer: NodeJS.Timeout | null = null;
+
+            const flushBuf = () => {
+                if (buf && !webContents.isDestroyed()) {
+                    webContents.send('terminal-data', { id: sessionId, data: buf });
+                }
+                buf = '';
+                flushTimer = null;
+            };
+
             stream.on('close', () => {
+                // Flush any remaining buffered output before disconnecting
+                if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+                flushBuf();
                 this.cleanup(sessionId);
                 webContents.send('ssh-status', { id: sessionId, status: 'disconnected' });
             });
             stream.on('data', (data: Buffer) => {
-                webContents.send('terminal-data', { id: sessionId, data: data.toString() });
+                buf += data.toString('utf-8');
+                if (!flushTimer) {
+                    flushTimer = setTimeout(flushBuf, 16);
+                }
             });
             resolve();
         });

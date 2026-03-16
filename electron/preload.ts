@@ -88,6 +88,28 @@ contextBridge.exposeInMainWorld('electron', {
   agentSessionLoad: (id: string) => ipcRenderer.invoke('agent-session-load', id),
   agentSessionDelete: (id: string) => ipcRenderer.invoke('agent-session-delete', id),
   agentSessionSetTitle: (id: string, title: string) => ipcRenderer.invoke('agent-session-set-title', id, title),
+
+  // Agent plan mode (main-process brain)
+  agentPlanStart:   (p: any) => ipcRenderer.invoke('agent-plan-start', p),
+  agentPlanStop:    (p: any) => ipcRenderer.send('agent-plan-stop', p),
+  agentPlanResume:  (p: any) => ipcRenderer.invoke('agent-plan-resume', p),
+  agentSessionClose:(id: string) => ipcRenderer.send('agent-session-close', { sessionId: id }),
+
+  onAgentPlanUpdate: (cb: (payload: any) => void) => {
+    const sub = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('agent-plan-update', sub);
+    return () => ipcRenderer.removeListener('agent-plan-update', sub);
+  },
+  onAgentPushMsg: (cb: (payload: any) => void) => {
+    const sub = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('agent-push-msg', sub);
+    return () => ipcRenderer.removeListener('agent-push-msg', sub);
+  },
+  onAgentUpdateMsg: (cb: (payload: any) => void) => {
+    const sub = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('agent-update-msg', sub);
+    return () => ipcRenderer.removeListener('agent-update-msg', sub);
+  },
 });
 
 console.log('Preload script loaded');

@@ -1,10 +1,12 @@
 import { ipcMain, BrowserWindow, dialog, clipboard } from 'electron';
 import { SSHManager } from './ssh/sshManager.js';
+import { AgentManager } from './agentManager.js';
 import { SSHConnection } from '../src/shared/types.js';
 import Store from 'electron-store';
 
 const store = new Store();
 const sshManager = new SSHManager(store);
+const agentManager = new AgentManager(sshManager);
 
 export function setupIpcHandlers() {
   // ── Universal AI fetch proxy (bypasses renderer CORS) ────────────────────────
@@ -252,5 +254,22 @@ export function setupIpcHandlers() {
 
   ipcMain.handle('clipboard-read', () => {
     return clipboard.readText();
+  });
+
+  // ── Agent Plan Mode (main-process brain) ────────────────────────────────────
+  ipcMain.handle('agent-plan-start', (event, { sessionId, goal, profile }) => {
+    agentManager.startPlan(sessionId, goal, profile, event.sender);
+  });
+
+  ipcMain.on('agent-plan-stop', (_event, { sessionId }) => {
+    agentManager.stop(sessionId);
+  });
+
+  ipcMain.handle('agent-plan-resume', (event, { sessionId, userInput, profile }) => {
+    agentManager.resume(sessionId, userInput, event.sender, profile);
+  });
+
+  ipcMain.on('agent-session-close', (_event, { sessionId }) => {
+    agentManager.cleanup(sessionId);
   });
 }
