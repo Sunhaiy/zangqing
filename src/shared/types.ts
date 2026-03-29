@@ -1,3 +1,5 @@
+import type { PlanState } from './aiTypes';
+
 export interface SSHConnection {
   id: string;
   name: string;
@@ -34,12 +36,41 @@ export interface AgentSessionMessage {
   };
 }
 
+export type AgentPlanPhase =
+  | 'idle'
+  | 'generating'
+  | 'executing'
+  | 'done'
+  | 'stopped'
+  | 'paused'
+  | 'waiting_approval';
+
+export interface AgentSessionContextWindow {
+  promptTokens: number;
+  limitTokens: number;
+  percentUsed: number;
+  compressionCount: number;
+  autoCompressed: boolean;
+  summaryChars: number;
+}
+
+export interface AgentSessionRuntime {
+  planState: PlanState | null;
+  planStatus: AgentPlanPhase;
+  contextWindow: AgentSessionContextWindow | null;
+  compressedMemory?: string;
+  knownProjectPaths?: string[];
+  agentModel?: string;
+  agentProfileId?: string;
+}
+
 export interface AgentSession {
   id: string;
   title: string;         // auto-generated from first user message
   profileId: string;     // SSHConnection.id — binds session to a server
   host: string;          // for display (doesn't change if server renamed)
   messages: AgentSessionMessage[];
+  runtime?: AgentSessionRuntime;
   createdAt: number;
   updatedAt: number;
 }

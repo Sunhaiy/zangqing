@@ -10,6 +10,7 @@ import {
 } from '../llm.js';
 import { SSHManager } from '../ssh/sshManager.js';
 import { PlanState } from '../../src/shared/aiTypes.js';
+import type { AgentSessionRuntime } from '../../src/shared/types.js';
 import { appendScratchpad, buildSystemPrompt, makeArtifactPreview } from './contextBuilder.js';
 import { buildLocalContext, createAgentToolRegistry, probeRemoteContext } from './toolRegistry.js';
 import {
@@ -25,6 +26,7 @@ interface StartAgentInput {
   profile: LLMProfile;
   sshHost?: string;
   threadMessages?: AgentRuntimeMessage[];
+  restoredRuntime?: AgentSessionRuntime | null;
 }
 
 interface ResumeAgentInput {
@@ -34,6 +36,7 @@ interface ResumeAgentInput {
   profile: LLMProfile;
   sshHost?: string;
   threadMessages?: AgentRuntimeMessage[];
+  restoredRuntime?: AgentSessionRuntime | null;
 }
 
 const DEPLOY_INTENT_RE = /(?:\bdeploy\b|\bpublish\b|部署|发布|上线)/i;
@@ -157,6 +160,7 @@ export class AgentV2Manager {
       sshHost: input.sshHost,
       webContents,
       threadMessages: input.threadMessages,
+      restoredRuntime: input.restoredRuntime,
       resetPlan: true,
     }).catch((error) => {
       const session = this.sessions.get(sessionId)!;
@@ -193,6 +197,7 @@ export class AgentV2Manager {
       sshHost: input.sshHost,
       webContents,
       threadMessages: input.threadMessages,
+      restoredRuntime: input.restoredRuntime,
       resetPlan: false,
     }).catch((error) => {
       const session = this.sessions.get(sessionId)!;
@@ -245,6 +250,7 @@ export class AgentV2Manager {
       sshHost?: string;
       webContents: WebContents;
       threadMessages?: AgentRuntimeMessage[];
+      restoredRuntime?: AgentSessionRuntime | null;
       resetPlan: boolean;
     },
   ) {
@@ -312,6 +318,7 @@ export class AgentV2Manager {
       profile: LLMProfile;
       sshHost?: string;
       webContents: WebContents;
+      restoredRuntime?: AgentSessionRuntime | null;
     },
   ): Promise<AgentThreadSession> {
     const existing = this.sessions.get(sessionId);
@@ -346,10 +353,19 @@ export class AgentV2Manager {
         autoCompressed: false,
         summaryChars: 0,
       },
-      planState: createPlanState(options.goal),
+      planState: options.restoredRuntime?.planState || createPlanState(options.goal),
       localContext,
       knownProjectPaths: [],
     };
+    if (options.restoredRuntime?.contextWindow) {
+      session.contextWindow = {
+        ...session.contextWindow,
+        ...options.restoredRuntime.contextWindow,
+        limitTokens: options.restoredRuntime.contextWindow.limitTokens || session.contextWindow.limitTokens,
+      };
+    }
+    session.compressedMemory = options.restoredRuntime?.compressedMemory || '';
+    session.knownProjectPaths = options.restoredRuntime?.knownProjectPaths || [];
     this.sessions.set(sessionId, session);
     return session;
   }
@@ -835,6 +851,8 @@ export class AgentV2Manager {
         planState: session.planState,
         planPhase,
         contextWindow: session.contextWindow,
+        compressedMemory: session.compressedMemory,
+        knownProjectPaths: session.knownProjectPaths,
       });
     }
   }

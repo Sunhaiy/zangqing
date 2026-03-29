@@ -146,10 +146,7 @@
 .agent-terminal-shell {
   position: relative;
   isolation: isolate;
-  background:
-    radial-gradient(circle at top left, hsl(var(--primary) / 0.12), transparent 26%),
-    radial-gradient(circle at bottom right, hsl(var(--accent) / 0.75), transparent 40%),
-    linear-gradient(180deg, hsl(var(--card) / 0.94), hsl(var(--background) / 0.98));
+  background: hsl(var(--background));
 }
 
 .agent-terminal-shell::before {
@@ -157,36 +154,20 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    linear-gradient(180deg, hsl(var(--foreground) / 0.03), transparent 18%),
-    repeating-linear-gradient(
-      to bottom,
-      hsl(var(--foreground) / 0.02) 0,
-      hsl(var(--foreground) / 0.02) 1px,
-      transparent 1px,
-      transparent 28px
-    );
-  opacity: 0.3;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
 }
 
 .agent-terminal-shell::after {
-  content: "";
-  position: absolute;
-  inset: 14px;
-  pointer-events: none;
-  border: 1px solid hsl(var(--border) / 0.7);
-  border-radius: 18px;
-  box-shadow:
-    inset 0 1px 0 hsl(var(--background) / 0.65),
-    0 24px 40px hsl(var(--foreground) / 0.06);
+  content: none;
 }
 
 .agent-terminal-shell .xterm {
-  padding: 18px 20px 20px;
+  padding: 16px;
 }
 
 .agent-terminal-shell .xterm-cursor-layer .xterm-cursor {
-  box-shadow: 0 0 14px hsl(var(--primary) / 0.3);
+  box-shadow: none;
 }
 
 .agent-terminal-shell .xterm-rows {
