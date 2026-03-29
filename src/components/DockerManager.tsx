@@ -1,12 +1,23 @@
-import { useEffect, useState, useRef, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-    RefreshCw, Play, Square, RotateCw, Container, AlertCircle,
-    Trash2, Pause, Terminal, FileText, HardDrive, Package,
-    Search, ChevronDown, ChevronUp, X, Layers, DownloadCloud
+    AlertCircle,
+    Container,
+    FileText,
+    HardDrive,
+    Layers,
+    Package,
+    Pause,
+    Play,
+    RefreshCw,
+    RotateCw,
+    Search,
+    Square,
+    Terminal,
+    Trash2,
+    X,
 } from 'lucide-react';
 import { useTranslation } from '../hooks/useTranslation';
 
-// ─── Types ───
 interface DockerContainer {
     id: string;
     name: string;
@@ -32,7 +43,6 @@ interface DockerManagerProps {
 type TabId = 'containers' | 'images' | 'prune';
 type ContainerFilter = 'all' | 'running' | 'stopped';
 
-// ─── Main Component ───
 export function DockerManager({ connectionId }: DockerManagerProps) {
     const [tab, setTab] = useState<TabId>('containers');
     const { t } = useTranslation();
@@ -44,26 +54,24 @@ export function DockerManager({ connectionId }: DockerManagerProps) {
     ];
 
     return (
-        <div className="h-full flex flex-col bg-transparent text-foreground">
-            {/* Tab Header */}
+        <div className="flex h-full flex-col bg-transparent text-foreground">
             <div className="flex border-b border-border bg-muted/30">
-                {tabs.map(tb => (
+                {tabs.map((item) => (
                     <button
-                        key={tb.id}
-                        onClick={() => setTab(tb.id)}
-                        className={`flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors
-                            ${tab === tb.id
-                                ? 'text-primary border-b-2 border-primary bg-primary/5'
-                                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                            }`}
+                        key={item.id}
+                        onClick={() => setTab(item.id)}
+                        className={`flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors ${
+                            tab === item.id
+                                ? 'border-b-2 border-primary bg-primary/5 text-primary'
+                                : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                        }`}
                     >
-                        <tb.icon className="w-3.5 h-3.5" />
-                        {tb.label}
+                        <item.icon className="h-3.5 w-3.5" />
+                        {item.label}
                     </button>
                 ))}
             </div>
 
-            {/* Tab Content */}
             <div className="flex-1 overflow-hidden">
                 {tab === 'containers' && <ContainersTab connectionId={connectionId} />}
                 {tab === 'images' && <ImagesTab connectionId={connectionId} />}
@@ -73,10 +81,8 @@ export function DockerManager({ connectionId }: DockerManagerProps) {
     );
 }
 
-// ═══════════════════════════════════════════════════════════
-// Containers Tab
-// ═══════════════════════════════════════════════════════════
 function ContainersTab({ connectionId }: { connectionId: string }) {
+    const { t } = useTranslation();
     const [containers, setContainers] = useState<DockerContainer[]>([]);
     const [loading, setLoading] = useState(false);
     const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -84,6 +90,17 @@ function ContainersTab({ connectionId }: { connectionId: string }) {
     const [filter, setFilter] = useState<ContainerFilter>('all');
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
+    const [actionMsg, setActionMsg] = useState<string | null>(null);
+    const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
+
+    const actionLabels: Record<string, string> = {
+        start: t('dockerManager.start'),
+        stop: t('dockerManager.stop'),
+        restart: t('dockerManager.restart'),
+        pause: t('dockerManager.pause'),
+        unpause: t('dockerManager.resume'),
+        remove: t('dockerManager.remove'),
+    };
 
     const fetchContainers = async () => {
         setLoading(true);
@@ -92,7 +109,7 @@ function ContainersTab({ connectionId }: { connectionId: string }) {
             const list = await (window as any).electron.getDockerContainers(connectionId);
             setContainers(list);
         } catch (err: any) {
-            setError(err.message || 'Failed to fetch containers');
+            setError(err?.message || t('dockerManager.fetchContainersFailed'));
         } finally {
             setLoading(false);
         }
@@ -100,29 +117,20 @@ function ContainersTab({ connectionId }: { connectionId: string }) {
 
     useEffect(() => {
         fetchContainers();
-        const interval = setInterval(fetchContainers, 8000);
-        return () => clearInterval(interval);
+        const interval = window.setInterval(fetchContainers, 8000);
+        return () => window.clearInterval(interval);
     }, [connectionId]);
-
-    const [actionMsg, setActionMsg] = useState<string | null>(null);
-    const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
-    const { t } = useTranslation();
-
-    const actionLabels: Record<string, string> = {
-        start: t('docker.start'), stop: t('docker.stop'), restart: t('docker.restart'),
-        pause: t('docker.pause'), unpause: t('docker.resume'), remove: t('docker.remove')
-    };
 
     const handleAction = async (containerId: string, action: string) => {
         setActionLoading(containerId);
         setActionMsg(null);
         try {
             await (window as any).electron.dockerAction(connectionId, containerId, action);
-            setActionMsg(`✓ 已${actionLabels[action] || action} ${containerId.substring(0, 12)}`);
-            setTimeout(() => setActionMsg(null), 3000);
+            setActionMsg(`${t('dockerManager.actionSucceeded')}: ${actionLabels[action] || action} ${containerId.substring(0, 12)}`);
+            window.setTimeout(() => setActionMsg(null), 3000);
             await fetchContainers();
         } catch (err: any) {
-            setError(`操作失败: ${err.message}`);
+            setError(`${t('dockerManager.actionFailed')}: ${err?.message || action}`);
         } finally {
             setActionLoading(null);
         }
@@ -132,246 +140,257 @@ function ContainersTab({ connectionId }: { connectionId: string }) {
         (window as any).electron?.writeTerminal(connectionId, `docker exec -it ${containerId} /bin/sh\n`);
     };
 
-    // Group by compose project
     const composeProjects = useMemo(() => {
         const projects = new Map<string, DockerContainer[]>();
-        containers.forEach(c => {
-            if (c.composeProject) {
-                const list = projects.get(c.composeProject) || [];
-                list.push(c);
-                projects.set(c.composeProject, list);
-            }
+        containers.forEach((container) => {
+            if (!container.composeProject) return;
+            const group = projects.get(container.composeProject) || [];
+            group.push(container);
+            projects.set(container.composeProject, group);
         });
         return projects;
     }, [containers]);
 
     const filtered = useMemo(() => {
         let list = containers;
-        if (filter === 'running') list = list.filter(c => c.state?.toLowerCase() === 'running');
-        if (filter === 'stopped') list = list.filter(c => c.state?.toLowerCase() !== 'running');
-        if (searchTerm) list = list.filter(c =>
-            c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            c.image.toLowerCase().includes(searchTerm.toLowerCase())
-        );
+        if (filter === 'running') list = list.filter((item) => item.state?.toLowerCase() === 'running');
+        if (filter === 'stopped') list = list.filter((item) => item.state?.toLowerCase() !== 'running');
+        if (searchTerm) {
+            const keyword = searchTerm.toLowerCase();
+            list = list.filter((item) =>
+                item.name.toLowerCase().includes(keyword) || item.image.toLowerCase().includes(keyword),
+            );
+        }
         return list;
     }, [containers, filter, searchTerm]);
 
+    const counts = useMemo(() => ({
+        all: containers.length,
+        running: containers.filter((item) => item.state?.toLowerCase() === 'running').length,
+        stopped: containers.filter((item) => item.state?.toLowerCase() !== 'running').length,
+    }), [containers]);
+
+    const filterLabel = (value: ContainerFilter) => {
+        if (value === 'running') return t('dockerManager.running');
+        if (value === 'stopped') return t('dockerManager.stopped');
+        return t('dockerManager.all');
+    };
+
     const getStateColor = (state: string) => {
-        const s = state?.toLowerCase();
-        if (s === 'running') return 'bg-green-500';
-        if (s === 'paused') return 'bg-yellow-500';
-        if (s === 'exited') return 'bg-muted-foreground/50';
+        const normalized = state?.toLowerCase();
+        if (normalized === 'running') return 'bg-green-500';
+        if (normalized === 'paused') return 'bg-yellow-500';
+        if (normalized === 'exited') return 'bg-muted-foreground/50';
         return 'bg-red-400';
     };
 
     const getStateBadge = (state: string) => {
-        const s = state?.toLowerCase();
-        if (s === 'running') return 'bg-green-500/15 text-green-500';
-        if (s === 'paused') return 'bg-yellow-500/15 text-yellow-500';
+        const normalized = state?.toLowerCase();
+        if (normalized === 'running') return 'bg-green-500/15 text-green-500';
+        if (normalized === 'paused') return 'bg-yellow-500/15 text-yellow-500';
         return 'bg-muted text-muted-foreground';
     };
 
-    const counts = useMemo(() => ({
-        all: containers.length,
-        running: containers.filter(c => c.state?.toLowerCase() === 'running').length,
-        stopped: containers.filter(c => c.state?.toLowerCase() !== 'running').length,
-    }), [containers]);
-
     return (
-        <div className="h-full flex flex-col">
-            {/* Toolbar */}
-            <div className="p-3 flex items-center gap-2 border-b border-border/50">
-                <div className="flex items-center bg-secondary/50 rounded-md text-[11px] overflow-hidden">
-                    {(['all', 'running', 'stopped'] as ContainerFilter[]).map(f => (
+        <div className="flex h-full flex-col">
+            <div className="flex items-center gap-2 border-b border-border/50 p-3">
+                <div className="flex overflow-hidden rounded-md bg-secondary/50 text-[11px]">
+                    {(['all', 'running', 'stopped'] as ContainerFilter[]).map((value) => (
                         <button
-                            key={f}
-                            onClick={() => setFilter(f)}
-                            className={`px-2.5 py-1 transition-colors ${filter === f
-                                ? 'bg-primary text-primary-foreground'
-                                : 'hover:bg-secondary text-muted-foreground'
-                                }`}
+                            key={value}
+                            onClick={() => setFilter(value)}
+                            className={`px-2.5 py-1 transition-colors ${
+                                filter === value ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-secondary'
+                            }`}
                         >
-                            {f === 'all' ? '全部' : f === 'running' ? '运行中' : '已停止'}
-                            <span className="ml-1 opacity-60">{counts[f]}</span>
+                            {filterLabel(value)}
+                            <span className="ml-1 opacity-60">{counts[value]}</span>
                         </button>
                     ))}
                 </div>
 
-                <div className="flex-1 relative">
-                    <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <div className="relative flex-1">
+                    <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
                     <input
                         value={searchTerm}
-                        onChange={e => setSearchTerm(e.target.value)}
-                        placeholder="搜索容器..."
-                        className="w-full pl-7 pr-2 py-1 text-[11px] bg-secondary/50 rounded-md border border-transparent focus:border-primary/50 outline-none"
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        placeholder={t('dockerManager.searchContainers')}
+                        className="w-full rounded-md border border-transparent bg-secondary/50 py-1 pl-7 pr-2 text-[11px] outline-none focus:border-primary/50"
                     />
                 </div>
 
-                <button onClick={fetchContainers} className="p-1.5 hover:bg-secondary rounded transition-colors" title="刷新">
-                    <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                <button onClick={fetchContainers} className="rounded p-1.5 transition-colors hover:bg-secondary" title={t('dockerManager.refresh')}>
+                    <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
                 </button>
             </div>
 
-            {/* Error */}
             {error && (
-                <div className="mx-3 mt-2 p-2.5 rounded-md bg-destructive/10 text-destructive text-[11px] flex items-center gap-2">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {error}
-                    <button onClick={() => setError(null)} className="ml-auto"><X className="w-3 h-3" /></button>
+                <div className="mx-3 mt-2 flex items-center gap-2 rounded-md bg-destructive/10 p-2.5 text-[11px] text-destructive">
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                    {error}
+                    <button onClick={() => setError(null)} className="ml-auto">
+                        <X className="h-3 w-3" />
+                    </button>
                 </div>
             )}
 
-            {/* Action Success */}
             {actionMsg && (
-                <div className="mx-3 mt-2 p-2 rounded-md bg-green-500/10 text-green-500 text-[11px] font-mono">
+                <div className="mx-3 mt-2 rounded-md bg-green-500/10 p-2 font-mono text-[11px] text-green-500">
                     {actionMsg}
                 </div>
             )}
 
-            {/* Compose Projects Banner */}
             {composeProjects.size > 0 && (
-                <div className="px-3 pt-2 flex flex-wrap gap-1.5">
-                    {Array.from(composeProjects.entries()).map(([project, pContainers]) => {
-                        const running = pContainers.filter(c => c.state?.toLowerCase() === 'running').length;
+                <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+                    {Array.from(composeProjects.entries()).map(([project, projectContainers]) => {
+                        const running = projectContainers.filter((item) => item.state?.toLowerCase() === 'running').length;
                         return (
-                            <div key={project} className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 text-[10px] font-mono">
-                                <Layers className="w-3 h-3" />
+                            <div key={project} className="flex items-center gap-1.5 rounded-full bg-blue-500/10 px-2 py-0.5 font-mono text-[10px] text-blue-400">
+                                <Layers className="h-3 w-3" />
                                 {project}
-                                <span className="opacity-60">{running}/{pContainers.length}</span>
+                                <span className="opacity-60">{running}/{projectContainers.length}</span>
                             </div>
                         );
                     })}
                 </div>
             )}
 
-            {/* Container List */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            <div className="flex-1 space-y-2 overflow-y-auto p-3">
                 {filtered.length === 0 && !loading && !error && (
-                    <div className="text-center text-muted-foreground text-xs py-8 opacity-70">
-                        <Container className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                        未找到容器
+                    <div className="py-8 text-center text-xs text-muted-foreground opacity-70">
+                        <Container className="mx-auto mb-2 h-8 w-8 opacity-30" />
+                        {t('dockerManager.noContainers')}
                     </div>
                 )}
 
-                {filtered.map(container => (
-                    <div key={container.id} className="bg-card/50 border border-border rounded-lg overflow-hidden hover:border-primary/30 transition-colors">
-                        {/* Container Header */}
+                {filtered.map((container) => (
+                    <div key={container.id} className="overflow-hidden rounded-lg border border-border bg-card/50 transition-colors hover:border-primary/30">
                         <div className="p-3">
-                            <div className="flex items-start justify-between mb-1.5">
+                            <div className="mb-1.5 flex items-start justify-between">
                                 <div className="min-w-0 flex-1">
-                                    <div className="font-medium text-xs truncate flex items-center gap-2">
-                                        <div className={`w-2 h-2 rounded-full shrink-0 ${getStateColor(container.state)}`} />
+                                    <div className="flex items-center gap-2 truncate text-xs font-medium">
+                                        <div className={`h-2 w-2 shrink-0 rounded-full ${getStateColor(container.state)}`} />
                                         {container.name}
                                         {container.composeProject && (
-                                            <span className="text-[9px] px-1.5 py-0 rounded bg-blue-500/10 text-blue-400 font-mono">
+                                            <span className="rounded bg-blue-500/10 px-1.5 py-0 font-mono text-[9px] text-blue-400">
                                                 {container.composeProject}
                                             </span>
                                         )}
                                     </div>
-                                    <div className="text-[10px] text-muted-foreground truncate mt-0.5 ml-4">{container.image}</div>
+                                    <div className="ml-4 mt-0.5 truncate text-[10px] text-muted-foreground">
+                                        {container.image}
+                                    </div>
                                 </div>
-                                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ml-2 whitespace-nowrap ${getStateBadge(container.state)}`}>
+                                <span className={`ml-2 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold ${getStateBadge(container.state)}`}>
                                     {container.state || 'unknown'}
                                 </span>
                             </div>
 
                             <div className="mt-2 space-y-1.5">
-                                <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60 font-mono">
+                                <div className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground/60">
                                     <span>{container.id.substring(0, 12)}</span>
-                                    {container.ports && <span className="truncate" title={container.ports}>⇢ {container.ports}</span>}
+                                    {container.ports && <span className="truncate" title={container.ports}>Ports: {container.ports}</span>}
                                 </div>
 
-                                <div className="flex items-center flex-wrap gap-0.5">
-                                    {/* Logs */}
+                                <div className="flex flex-wrap items-center gap-0.5">
                                     <button
                                         onClick={() => setExpandedId(expandedId === container.id ? null : container.id)}
-                                        className={`p-1 rounded transition-colors ${expandedId === container.id ? 'bg-primary/20 text-primary' : 'hover:bg-secondary text-muted-foreground'}`}
-                                        title="日志"
+                                        className={`rounded p-1 transition-colors ${
+                                            expandedId === container.id ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:bg-secondary'
+                                        }`}
+                                        title={t('dockerManager.logs')}
                                     >
-                                        <FileText className="w-3.5 h-3.5" />
+                                        <FileText className="h-3.5 w-3.5" />
                                     </button>
 
-                                    {/* Exec */}
                                     <button
                                         onClick={() => handleExec(container.id)}
                                         disabled={container.state?.toLowerCase() !== 'running'}
-                                        className="p-1 hover:bg-purple-500/10 hover:text-purple-400 rounded disabled:opacity-20 transition-colors"
-                                        title="进入容器"
+                                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-purple-500/10 hover:text-purple-400 disabled:opacity-20"
+                                        title={t('dockerManager.exec')}
                                     >
-                                        <Terminal className="w-3.5 h-3.5" />
+                                        <Terminal className="h-3.5 w-3.5" />
                                     </button>
 
-                                    {/* Start */}
                                     <button
                                         onClick={() => handleAction(container.id, 'start')}
-                                        disabled={!!actionLoading || container.state?.toLowerCase() === 'running'}
-                                        className="p-1 hover:bg-green-500/10 hover:text-green-500 rounded disabled:opacity-20 transition-colors"
-                                        title="启动"
+                                        disabled={Boolean(actionLoading) || container.state?.toLowerCase() === 'running'}
+                                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-green-500/10 hover:text-green-500 disabled:opacity-20"
+                                        title={t('dockerManager.start')}
                                     >
-                                        <Play className="w-3.5 h-3.5" />
+                                        <Play className="h-3.5 w-3.5" />
                                     </button>
 
-                                    {/* Pause / Unpause */}
                                     {container.state?.toLowerCase() === 'paused' ? (
                                         <button
                                             onClick={() => handleAction(container.id, 'unpause')}
-                                            disabled={!!actionLoading}
-                                            className="p-1 hover:bg-yellow-500/10 hover:text-yellow-500 rounded disabled:opacity-20 transition-colors"
-                                            title="恢复"
+                                            disabled={Boolean(actionLoading)}
+                                            className="rounded p-1 text-muted-foreground transition-colors hover:bg-yellow-500/10 hover:text-yellow-500 disabled:opacity-20"
+                                            title={t('dockerManager.resume')}
                                         >
-                                            <Play className="w-3.5 h-3.5" />
+                                            <Play className="h-3.5 w-3.5" />
                                         </button>
                                     ) : (
                                         <button
                                             onClick={() => handleAction(container.id, 'pause')}
-                                            disabled={!!actionLoading || container.state?.toLowerCase() !== 'running'}
-                                            className="p-1 hover:bg-yellow-500/10 hover:text-yellow-500 rounded disabled:opacity-20 transition-colors"
-                                            title="暂停"
+                                            disabled={Boolean(actionLoading) || container.state?.toLowerCase() !== 'running'}
+                                            className="rounded p-1 text-muted-foreground transition-colors hover:bg-yellow-500/10 hover:text-yellow-500 disabled:opacity-20"
+                                            title={t('dockerManager.pause')}
                                         >
-                                            <Pause className="w-3.5 h-3.5" />
+                                            <Pause className="h-3.5 w-3.5" />
                                         </button>
                                     )}
 
-                                    {/* Restart */}
                                     <button
                                         onClick={() => handleAction(container.id, 'restart')}
-                                        disabled={!!actionLoading}
-                                        className="p-1 hover:bg-blue-500/10 hover:text-blue-500 rounded disabled:opacity-20 transition-colors"
-                                        title="重启"
+                                        disabled={Boolean(actionLoading)}
+                                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-blue-500/10 hover:text-blue-500 disabled:opacity-20"
+                                        title={t('dockerManager.restart')}
                                     >
-                                        <RotateCw className={`w-3.5 h-3.5 ${actionLoading === container.id ? 'animate-spin' : ''}`} />
+                                        <RotateCw className={`h-3.5 w-3.5 ${actionLoading === container.id ? 'animate-spin' : ''}`} />
                                     </button>
 
-                                    {/* Stop */}
                                     <button
                                         onClick={() => handleAction(container.id, 'stop')}
-                                        disabled={!!actionLoading || container.state?.toLowerCase() !== 'running'}
-                                        className="p-1 hover:bg-red-500/10 hover:text-red-500 rounded disabled:opacity-20 transition-colors"
-                                        title="停止"
+                                        disabled={Boolean(actionLoading) || container.state?.toLowerCase() !== 'running'}
+                                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-20"
+                                        title={t('dockerManager.stop')}
                                     >
-                                        <Square className="w-3.5 h-3.5 fill-current" />
+                                        <Square className="h-3.5 w-3.5 fill-current" />
                                     </button>
 
-                                    {/* Delete */}
                                     {pendingConfirm === container.id ? (
                                         <>
-                                            <button onClick={() => setPendingConfirm(null)} className="p-1 text-[10px] hover:bg-secondary rounded transition-colors text-muted-foreground">取消</button>
-                                            <button onClick={() => { setPendingConfirm(null); handleAction(container.id, 'remove'); }} className="p-1 text-[10px] rounded bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors">确认</button>
+                                            <button
+                                                onClick={() => setPendingConfirm(null)}
+                                                className="rounded p-1 text-[10px] text-muted-foreground transition-colors hover:bg-secondary"
+                                            >
+                                                {t('dockerManager.cancel')}
+                                            </button>
+                                            <button
+                                                onClick={() => {
+                                                    setPendingConfirm(null);
+                                                    handleAction(container.id, 'remove');
+                                                }}
+                                                className="rounded bg-destructive/10 p-1 text-[10px] text-destructive transition-colors hover:bg-destructive/20"
+                                            >
+                                                {t('dockerManager.confirm')}
+                                            </button>
                                         </>
                                     ) : (
                                         <button
                                             onClick={() => setPendingConfirm(container.id)}
-                                            disabled={!!actionLoading}
-                                            className="p-1 hover:bg-red-500/10 hover:text-red-500 rounded disabled:opacity-20 transition-colors"
-                                            title="删除"
+                                            disabled={Boolean(actionLoading)}
+                                            className="rounded p-1 text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-20"
+                                            title={t('dockerManager.remove')}
                                         >
-                                            <Trash2 className="w-3.5 h-3.5" />
+                                            <Trash2 className="h-3.5 w-3.5" />
                                         </button>
                                     )}
                                 </div>
                             </div>
                         </div>
 
-                        {/* Expanded Logs */}
                         {expandedId === container.id && (
                             <LogViewer connectionId={connectionId} containerId={container.id} containerName={container.name} />
                         )}
@@ -382,34 +401,33 @@ function ContainersTab({ connectionId }: { connectionId: string }) {
     );
 }
 
-// ═══════════════════════════════════════════════════════════
-// Log Viewer (inline expand)
-// ═══════════════════════════════════════════════════════════
 function LogViewer({ connectionId, containerId, containerName }: { connectionId: string; containerId: string; containerName: string }) {
+    const { t } = useTranslation();
     const [logs, setLogs] = useState('');
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const logRef = useRef<HTMLDivElement>(null);
-    const { t } = useTranslation();
 
     const fetchLogs = async () => {
         setLoading(true);
         try {
             const text = await (window as any).electron.dockerLogs(connectionId, containerId, 300);
             setLogs(text);
-            setTimeout(() => logRef.current?.scrollTo(0, logRef.current.scrollHeight), 50);
+            window.setTimeout(() => logRef.current?.scrollTo(0, logRef.current!.scrollHeight), 50);
         } catch {
-            setLogs('Failed to fetch logs');
+            setLogs(t('dockerManager.fetchLogsFailed'));
         } finally {
             setLoading(false);
         }
     };
 
-    useEffect(() => { fetchLogs(); }, [containerId]);
+    useEffect(() => {
+        fetchLogs();
+    }, [containerId]);
 
     const lines = logs.split('\n');
     const filteredLines = searchTerm
-        ? lines.filter(l => l.toLowerCase().includes(searchTerm.toLowerCase()))
+        ? lines.filter((line) => line.toLowerCase().includes(searchTerm.toLowerCase()))
         : lines;
 
     const highlightSearch = (line: string) => {
@@ -419,7 +437,9 @@ function LogViewer({ connectionId, containerId, containerName }: { connectionId:
         return (
             <>
                 {line.slice(0, idx)}
-                <span className="bg-yellow-500/30 text-yellow-200 px-0.5 rounded">{line.slice(idx, idx + searchTerm.length)}</span>
+                <span className="rounded bg-yellow-500/30 px-0.5 text-yellow-200">
+                    {line.slice(idx, idx + searchTerm.length)}
+                </span>
                 {line.slice(idx + searchTerm.length)}
             </>
         );
@@ -427,43 +447,45 @@ function LogViewer({ connectionId, containerId, containerName }: { connectionId:
 
     return (
         <div className="border-t border-border bg-background/80">
-            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/50 bg-muted/30">
-                <FileText className="w-3 h-3 text-muted-foreground" />
-                <span className="text-[10px] text-muted-foreground font-mono">{containerName} 日志</span>
-                <div className="flex-1 relative">
-                    <Search className="w-3 h-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground/50" />
+            <div className="flex items-center gap-2 border-b border-border/50 bg-muted/30 px-3 py-1.5">
+                <FileText className="h-3 w-3 text-muted-foreground" />
+                <span className="font-mono text-[10px] text-muted-foreground">{containerName} {t('dockerManager.logs')}</span>
+                <div className="relative flex-1">
+                    <Search className="absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/50" />
                     <input
                         value={searchTerm}
-                        onChange={e => setSearchTerm(e.target.value)}
+                        onChange={(e) => setSearchTerm(e.target.value)}
                         placeholder={t('common.search')}
-                        className="w-full pl-6 pr-2 py-0.5 text-[10px] bg-secondary/50 rounded border border-transparent focus:border-primary/50 outline-none"
+                        className="w-full rounded border border-transparent bg-secondary/50 py-0.5 pl-6 pr-2 text-[10px] outline-none focus:border-primary/50"
                     />
                 </div>
-                <button onClick={fetchLogs} className="p-1 hover:bg-secondary rounded">
-                    <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                <button onClick={fetchLogs} className="rounded p-1 hover:bg-secondary" title={t('dockerManager.refresh')}>
+                    <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
                 </button>
             </div>
-            <div ref={logRef} className="h-[200px] overflow-y-auto p-2 font-mono text-[10px] leading-[1.6] text-muted-foreground scrollbar-hide">
-                {filteredLines.map((line, i) => (
-                    <div key={i} className="hover:bg-muted/30 px-1 whitespace-pre-wrap break-all">
+
+            <div ref={logRef} className="scrollbar-hide h-[200px] overflow-y-auto p-2 font-mono text-[10px] leading-[1.6] text-muted-foreground">
+                {filteredLines.map((line, index) => (
+                    <div key={index} className="whitespace-pre-wrap break-all px-1 hover:bg-muted/30">
                         {highlightSearch(line)}
                     </div>
                 ))}
-                {loading && <div className="text-center text-muted-foreground/50 py-4 animate-pulse">加载中...</div>}
+                {loading && (
+                    <div className="py-4 text-center text-muted-foreground/50 animate-pulse">
+                        {t('dockerManager.loading')}
+                    </div>
+                )}
             </div>
         </div>
     );
 }
 
-// ═══════════════════════════════════════════════════════════
-// Images Tab
-// ═══════════════════════════════════════════════════════════
 function ImagesTab({ connectionId }: { connectionId: string }) {
+    const { t } = useTranslation();
     const [images, setImages] = useState<DockerImage[]>([]);
     const [loading, setLoading] = useState(false);
     const [deleting, setDeleting] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const { t } = useTranslation();
 
     const fetchImages = async () => {
         setLoading(true);
@@ -472,13 +494,15 @@ function ImagesTab({ connectionId }: { connectionId: string }) {
             const list = await (window as any).electron.dockerImages(connectionId);
             setImages(list);
         } catch (err: any) {
-            setError(err.message);
+            setError(err?.message || t('common.error'));
         } finally {
             setLoading(false);
         }
     };
 
-    useEffect(() => { fetchImages(); }, [connectionId]);
+    useEffect(() => {
+        fetchImages();
+    }, [connectionId]);
 
     const handleDelete = async (imageId: string) => {
         setDeleting(imageId);
@@ -486,59 +510,61 @@ function ImagesTab({ connectionId }: { connectionId: string }) {
             await (window as any).electron.dockerRemoveImage(connectionId, imageId);
             await fetchImages();
         } catch (err: any) {
-            setError(err.message);
+            setError(err?.message || t('common.error'));
         } finally {
             setDeleting(null);
         }
     };
 
     return (
-        <div className="h-full flex flex-col">
-            <div className="p-3 flex items-center justify-between border-b border-border/50">
+        <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between border-b border-border/50 p-3">
                 <div className="flex items-center gap-2 text-xs">
-                    <Package className="w-4 h-4 text-blue-400" />
+                    <Package className="h-4 w-4 text-blue-400" />
                     <span className="font-medium">{t('docker.images')}</span>
-                    <span className="text-muted-foreground bg-secondary px-1.5 rounded-full text-[10px]">{images.length}</span>
+                    <span className="rounded-full bg-secondary px-1.5 text-[10px] text-muted-foreground">{images.length}</span>
                 </div>
-                <button onClick={fetchImages} className="p-1.5 hover:bg-secondary rounded transition-colors">
-                    <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                <button onClick={fetchImages} className="rounded p-1.5 transition-colors hover:bg-secondary" title={t('dockerManager.refresh')}>
+                    <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
                 </button>
             </div>
 
             {error && (
-                <div className="mx-3 mt-2 p-2 rounded-md bg-destructive/10 text-destructive text-[11px] flex items-center gap-2">
-                    <AlertCircle className="w-3.5 h-3.5" /> {error}
+                <div className="mx-3 mt-2 flex items-center gap-2 rounded-md bg-destructive/10 p-2 text-[11px] text-destructive">
+                    <AlertCircle className="h-3.5 w-3.5" />
+                    {error}
                 </div>
             )}
 
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {images.map(img => (
-                    <div key={img.id} className="bg-card/50 border border-border rounded-lg p-3 hover:border-primary/30 transition-colors">
+            <div className="flex-1 space-y-2 overflow-y-auto p-3">
+                {images.map((image) => (
+                    <div key={image.id} className="rounded-lg border border-border bg-card/50 p-3 transition-colors hover:border-primary/30">
                         <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
-                                <div className="font-mono text-xs truncate text-foreground/90">
-                                    {img.repository}<span className="text-muted-foreground">:{img.tag}</span>
+                                <div className="truncate font-mono text-xs text-foreground/90">
+                                    {image.repository}<span className="text-muted-foreground">:{image.tag}</span>
                                 </div>
-                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px] text-muted-foreground/60">
-                                    <span className="font-mono">{img.size}</span>
-                                    <span>{img.created}</span>
-                                    <span className="font-mono">{img.id.substring(0, 12)}</span>
+                                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground/60">
+                                    <span className="font-mono">{image.size}</span>
+                                    <span>{image.created}</span>
+                                    <span className="font-mono">{image.id.substring(0, 12)}</span>
                                 </div>
                             </div>
                             <button
-                                onClick={() => handleDelete(img.id)}
-                                disabled={!!deleting}
-                                className="p-1.5 hover:bg-red-500/10 hover:text-red-500 rounded disabled:opacity-20 transition-colors shrink-0"
+                                onClick={() => handleDelete(image.id)}
+                                disabled={Boolean(deleting)}
+                                className="shrink-0 rounded p-1.5 text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-20"
+                                title={t('dockerManager.remove')}
                             >
-                                <Trash2 className={`w-3.5 h-3.5 ${deleting === img.id ? 'animate-spin' : ''}`} />
+                                <Trash2 className={`h-3.5 w-3.5 ${deleting === image.id ? 'animate-spin' : ''}`} />
                             </button>
                         </div>
                     </div>
                 ))}
 
                 {images.length === 0 && !loading && (
-                    <div className="text-center text-muted-foreground text-xs py-8 opacity-70">
-                        <Package className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                    <div className="py-8 text-center text-xs text-muted-foreground opacity-70">
+                        <Package className="mx-auto mb-2 h-8 w-8 opacity-30" />
                         {t('docker.noDockerHint')}
                     </div>
                 )}
@@ -547,15 +573,12 @@ function ImagesTab({ connectionId }: { connectionId: string }) {
     );
 }
 
-// ═══════════════════════════════════════════════════════════
-// Prune Tab
-// ═══════════════════════════════════════════════════════════
 function PruneTab({ connectionId }: { connectionId: string }) {
+    const { t } = useTranslation();
     const [diskUsage, setDiskUsage] = useState('');
     const [loading, setLoading] = useState(false);
     const [pruneResult, setPruneResult] = useState<string | null>(null);
     const [pruning, setPruning] = useState<string | null>(null);
-    const { t } = useTranslation();
 
     const fetchDiskUsage = async () => {
         setLoading(true);
@@ -563,15 +586,17 @@ function PruneTab({ connectionId }: { connectionId: string }) {
             const text = await (window as any).electron.dockerDiskUsage(connectionId);
             setDiskUsage(text);
         } catch {
-            setDiskUsage('Failed to get disk usage');
+            setDiskUsage(t('dockerManager.diskUsageFailed'));
         } finally {
             setLoading(false);
         }
     };
 
-    useEffect(() => { fetchDiskUsage(); }, [connectionId]);
+    useEffect(() => {
+        fetchDiskUsage();
+    }, [connectionId]);
 
-    const handlePrune = async (type: string, label: string) => {
+    const handlePrune = async (type: string) => {
         setPruning(type);
         setPruneResult(null);
         try {
@@ -579,65 +604,64 @@ function PruneTab({ connectionId }: { connectionId: string }) {
             setPruneResult(result);
             await fetchDiskUsage();
         } catch (err: any) {
-            setPruneResult(`${t('common.error')}: ${err.message}`);
+            setPruneResult(`${t('common.error')}: ${err?.message || type}`);
         } finally {
             setPruning(null);
         }
     };
 
     const pruneActions = [
-        { type: 'containers', label: '清理已停止的容器', icon: Container, color: 'text-muted-foreground hover:bg-secondary', desc: 'docker container prune' },
-        { type: 'images', label: '清理无用镜像', icon: Package, color: 'text-muted-foreground hover:bg-secondary', desc: 'docker image prune -a' },
-        { type: 'volumes', label: '清理悬空数据卷', icon: HardDrive, color: 'text-muted-foreground hover:bg-secondary', desc: 'docker volume prune' },
-        { type: 'system', label: '全面清理 (System Prune)', icon: Trash2, color: 'text-destructive hover:bg-destructive/10', desc: 'docker system prune -af --volumes' },
+        { type: 'containers', label: t('dockerManager.pruneContainers'), icon: Container, color: 'text-muted-foreground hover:bg-secondary', desc: 'docker container prune' },
+        { type: 'images', label: t('dockerManager.pruneImages'), icon: Package, color: 'text-muted-foreground hover:bg-secondary', desc: 'docker image prune -a' },
+        { type: 'volumes', label: t('dockerManager.pruneVolumes'), icon: HardDrive, color: 'text-muted-foreground hover:bg-secondary', desc: 'docker volume prune' },
+        { type: 'system', label: t('dockerManager.pruneSystem'), icon: Trash2, color: 'text-muted-foreground hover:bg-secondary', desc: 'docker system prune -af --volumes' },
     ];
 
     return (
-        <div className="h-full flex flex-col">
-            {/* Disk Usage */}
-            <div className="p-3 border-b border-border/50">
-                <div className="flex items-center justify-between mb-2">
+        <div className="flex h-full flex-col">
+            <div className="border-b border-border/50 p-3">
+                <div className="mb-2 flex items-center justify-between">
                     <div className="flex items-center gap-2 text-xs font-medium">
-                        <HardDrive className="w-4 h-4 text-amber-400" />
+                        <HardDrive className="h-4 w-4 text-amber-400" />
                         {t('docker.stats')}
                     </div>
-                    <button onClick={fetchDiskUsage} className="p-1 hover:bg-secondary rounded">
-                        <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                    <button onClick={fetchDiskUsage} className="rounded p-1 hover:bg-secondary" title={t('dockerManager.refresh')}>
+                        <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
                     </button>
                 </div>
-                <pre className="text-[10px] font-mono text-muted-foreground bg-secondary/30 rounded-md p-2 overflow-x-auto whitespace-pre leading-[1.5]">
+                <pre className="overflow-x-auto whitespace-pre rounded-md bg-secondary/30 p-2 font-mono text-[10px] leading-[1.5] text-muted-foreground">
                     {loading ? t('common.loading') : (diskUsage || t('common.loading'))}
                 </pre>
             </div>
 
-            {/* Prune Actions */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {pruneActions.map(action => (
+            <div className="flex-1 space-y-2 overflow-y-auto p-3">
+                {pruneActions.map((action) => (
                     <button
                         key={action.type}
-                        onClick={() => handlePrune(action.type, action.label)}
-                        disabled={!!pruning}
-                        className={`w-full flex items-center gap-3 p-3 rounded-lg border border-border bg-card/50 transition-all ${action.color} disabled:opacity-40`}
+                        onClick={() => handlePrune(action.type)}
+                        disabled={Boolean(pruning)}
+                        className={`w-full rounded-lg border border-border bg-card/50 p-3 text-left transition-all disabled:opacity-40 ${action.color}`}
                     >
-                        <action.icon className={`w-5 h-5 shrink-0 ${pruning === action.type ? 'animate-pulse' : ''}`} />
-                        <div className="text-left min-w-0">
-                            <div className="text-xs font-medium">{action.label}</div>
-                            <div className="text-[10px] text-muted-foreground/60 font-mono">{action.desc}</div>
+                        <div className="flex items-center gap-3">
+                            <action.icon className={`h-5 w-5 shrink-0 ${pruning === action.type ? 'animate-pulse' : ''}`} />
+                            <div className="min-w-0">
+                                <div className="text-xs font-medium">{action.label}</div>
+                                <div className="font-mono text-[10px] text-muted-foreground/60">{action.desc}</div>
+                            </div>
                         </div>
                     </button>
                 ))}
             </div>
 
-            {/* Prune Result */}
             {pruneResult && (
                 <div className="border-t border-border p-3">
-                    <div className="flex items-center justify-between mb-1.5">
+                    <div className="mb-1.5 flex items-center justify-between">
                         <span className="text-[10px] font-medium text-muted-foreground">{t('docker.prune')}</span>
-                        <button onClick={() => setPruneResult(null)} className="p-0.5 hover:bg-secondary rounded">
-                            <X className="w-3 h-3" />
+                        <button onClick={() => setPruneResult(null)} className="rounded p-0.5 hover:bg-secondary">
+                            <X className="h-3 w-3" />
                         </button>
                     </div>
-                    <pre className="text-[10px] font-mono text-green-400/80 bg-secondary/30 rounded-md p-2 overflow-x-auto whitespace-pre max-h-[150px] overflow-y-auto leading-[1.5]">
+                    <pre className="max-h-[150px] overflow-x-auto overflow-y-auto whitespace-pre rounded-md bg-secondary/30 p-2 font-mono text-[10px] leading-[1.5] text-green-400/80">
                         {pruneResult}
                     </pre>
                 </div>

@@ -20,6 +20,88 @@ function normalizeLocalPath(targetPath: string): string {
   return path.resolve(targetPath);
 }
 
+interface GitHubDeploySource {
+  cloneUrl: string;
+  displayUrl: string;
+  branch?: string;
+  subdir?: string;
+}
+
+function parseGitHubProjectUrl(rawUrl: string): GitHubDeploySource | null {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawUrl.trim());
+  } catch {
+    return null;
+  }
+
+  const hostname = parsedUrl.hostname.toLowerCase();
+  if (hostname !== 'github.com' && hostname !== 'www.github.com') {
+    return null;
+  }
+
+  const parts = parsedUrl.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (parts.length < 2) {
+    return null;
+  }
+
+  const owner = parts[0];
+  const repo = parts[1]?.replace(/\.git$/i, '');
+  if (!owner || !repo) {
+    return null;
+  }
+
+  const source: GitHubDeploySource = {
+    cloneUrl: `https://github.com/${owner}/${repo}.git`,
+    displayUrl: `https://github.com/${owner}/${repo}`,
+  };
+
+  if (parts[2] === 'tree' && parts[3]) {
+    source.branch = decodeURIComponent(parts[3]);
+    source.subdir = parts.slice(4).map((segment) => decodeURIComponent(segment)).join(path.sep);
+  }
+
+  return source;
+}
+
+async function cloneGitHubProject(rawUrl: string) {
+  const source = parseGitHubProjectUrl(rawUrl);
+  if (!source) {
+    throw new Error(`Unsupported GitHub project URL: ${rawUrl}`);
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sshtool-github-'));
+  const cloneArgs = ['clone', '--depth', '1'];
+  if (source.branch) {
+    cloneArgs.push('--branch', source.branch);
+  }
+  cloneArgs.push(source.cloneUrl, tempDir);
+
+  try {
+    await execFile('git', cloneArgs, {
+      timeout: 120000,
+      maxBuffer: 1024 * 1024 * 8,
+      windowsHide: true,
+    });
+  } catch (error: any) {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    const detail = error?.stderr ? String(error.stderr).trim() : (error?.message || String(error));
+    throw new Error(`Failed to clone GitHub repository: ${detail}`);
+  }
+
+  let projectRoot = tempDir;
+  if (source.subdir) {
+    projectRoot = path.join(tempDir, source.subdir);
+    const stats = await fs.stat(projectRoot).catch(() => null);
+    if (!stats?.isDirectory()) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+      throw new Error(`GitHub link points to a subdirectory that was not found after clone: ${source.subdir}`);
+    }
+  }
+
+  return { tempDir, projectRoot, source };
+}
+
 function truncate(text: string, maxChars = 4000): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...[truncated]`;
@@ -224,11 +306,11 @@ export function createAgentToolRegistry(
       type: 'function' as const,
       function: {
         name: 'deploy_project',
-        description: 'Run the deterministic deployment engine for a local project path against the currently connected remote server.',
+        description: 'Run the deterministic deployment engine for a local project directory or a GitHub repository URL against the currently connected remote server.',
         parameters: {
           type: 'object',
           properties: {
-            projectRoot: { type: 'string', description: 'Absolute local project directory path.' },
+            projectRoot: { type: 'string', description: 'Absolute local project directory path, or a GitHub repository URL.' },
           },
           required: ['projectRoot'],
         },
@@ -387,33 +469,50 @@ export function createAgentToolRegistry(
           };
         }
         case 'deploy_project': {
-          const projectRoot = normalizeLocalPath(requireString(args, 'projectRoot'));
-          const stats = await fs.stat(projectRoot).catch(() => null);
-          if (!stats?.isDirectory()) {
-            throw new Error(`Local project path does not exist: ${projectRoot}`);
+          const projectInput = requireString(args, 'projectRoot');
+          const githubSource = parseGitHubProjectUrl(projectInput);
+          let projectRoot = '';
+          let cleanupDir = '';
+          if (githubSource) {
+            const cloned = await cloneGitHubProject(projectInput);
+            projectRoot = cloned.projectRoot;
+            cleanupDir = cloned.tempDir;
+          } else {
+            projectRoot = normalizeLocalPath(projectInput);
+            const stats = await fs.stat(projectRoot).catch(() => null);
+            if (!stats?.isDirectory()) {
+              throw new Error(`Local project path does not exist: ${projectRoot}`);
+            }
           }
           const connection = sshMgr.getConnectionConfig(session.connectionId);
-          const run = await deploymentManager.runBlocking(session.connectionId, session.webContents, {
-            sessionId: session.connectionId,
-            serverProfileId: connection?.id || session.connectionId,
-            projectRoot,
-          });
-          const summary = {
-            status: run.status,
-            url: run.outputs.url || run.outputs.healthCheckUrl || '',
-            strategyId: run.outputs.strategyId || '',
-            error: run.error || '',
-            warnings: run.warnings,
-          };
-          return {
-            ok: run.status === 'completed',
-            displayCommand: `deploy ${projectRoot}`,
-            content: stringify(summary),
-            structured: summary,
-            scratchpadNote: run.status === 'completed'
-              ? `部署成功: ${projectRoot} -> ${summary.url || session.sshHost}`
-              : `部署失败: ${projectRoot} -> ${summary.error || 'unknown error'}`,
-          };
+          try {
+            const run = await deploymentManager.runBlocking(session.connectionId, session.webContents, {
+              sessionId: session.connectionId,
+              serverProfileId: connection?.id || session.connectionId,
+              projectRoot,
+            });
+            const summary = {
+              status: run.status,
+              url: run.outputs.url || run.outputs.healthCheckUrl || '',
+              strategyId: run.outputs.strategyId || '',
+              error: run.error || '',
+              warnings: run.warnings,
+              source: projectInput,
+            };
+            return {
+              ok: run.status === 'completed',
+              displayCommand: `deploy ${projectInput}`,
+              content: stringify(summary),
+              structured: summary,
+              scratchpadNote: run.status === 'completed'
+                ? `Deployment completed: ${projectInput} -> ${summary.url || session.sshHost}`
+                : `Deployment failed: ${projectInput} -> ${summary.error || 'unknown error'}`,
+            };
+          } finally {
+            if (cleanupDir) {
+              await fs.rm(cleanupDir, { recursive: true, force: true }).catch(() => undefined);
+            }
+          }
         }
         default:
           throw new Error(`Unknown tool: ${name}`);

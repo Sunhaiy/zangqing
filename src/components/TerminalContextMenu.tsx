@@ -1,6 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Clipboard, HelpCircle, AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Clipboard, Copy, HelpCircle } from 'lucide-react';
+import { useTranslation } from '../hooks/useTranslation';
 
 interface TerminalContextMenuProps {
     x: number;
@@ -23,19 +24,17 @@ export function TerminalContextMenu({
     onPaste,
     onExplain,
     onFix,
-    onClose
+    onClose,
 }: TerminalContextMenuProps) {
-    // Ensure menu stays within viewport
+    const { t } = useTranslation();
     const menuWidth = 200;
-    const menuHeight = aiEnabled ? 160 : 60; // Approximate heights
+    const menuHeight = aiEnabled ? 160 : 60;
     const padding = 10;
-
     const adjustedX = Math.min(x, window.innerWidth - menuWidth - padding);
     const adjustedY = Math.min(y, window.innerHeight - menuHeight - padding);
 
     return createPortal(
         <>
-            {/* Backdrop to close menu on click outside */}
             <div
                 className="fixed inset-0 z-[9998]"
                 onClick={onClose}
@@ -46,7 +45,7 @@ export function TerminalContextMenu({
             />
 
             <div
-                className="fixed z-[9999] w-[200px] bg-card border border-border rounded-lg shadow-xl py-1 animate-in fade-in zoom-in-95 duration-100"
+                className="fixed z-[9999] w-[200px] rounded-lg border border-border bg-card py-1 shadow-xl animate-in fade-in zoom-in-95 duration-100"
                 style={{ left: adjustedX, top: adjustedY }}
             >
                 <button
@@ -55,10 +54,10 @@ export function TerminalContextMenu({
                         onClose();
                     }}
                     disabled={!hasSelection}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed group"
+                    className="group flex w-full items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                    <Copy className="w-4 h-4 text-muted-foreground group-hover:text-foreground" />
-                    <span>复制 (Copy)</span>
+                    <Copy className="h-4 w-4 text-muted-foreground group-hover:text-foreground" />
+                    <span>{t('terminalMenu.copy')}</span>
                     <span className="ml-auto text-[10px] text-muted-foreground">Ctrl+C</span>
                 </button>
 
@@ -67,16 +66,16 @@ export function TerminalContextMenu({
                         onPaste();
                         onClose();
                     }}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-secondary transition-colors group"
+                    className="group flex w-full items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-secondary"
                 >
-                    <Clipboard className="w-4 h-4 text-muted-foreground group-hover:text-foreground" />
-                    <span>粘贴 (Paste)</span>
+                    <Clipboard className="h-4 w-4 text-muted-foreground group-hover:text-foreground" />
+                    <span>{t('terminalMenu.paste')}</span>
                     <span className="ml-auto text-[10px] text-muted-foreground">Ctrl+V</span>
                 </button>
 
                 {aiEnabled && (
                     <>
-                        <div className="h-px bg-border my-1" />
+                        <div className="my-1 h-px bg-border" />
 
                         <button
                             onClick={() => {
@@ -84,10 +83,10 @@ export function TerminalContextMenu({
                                 onClose();
                             }}
                             disabled={!hasSelection}
-                            className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-primary/10 hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed group"
+                            className="flex w-full items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                            <HelpCircle className="w-4 h-4 text-indigo-500" />
-                            <span>AI 解释 (Explain)</span>
+                            <HelpCircle className="h-4 w-4 text-indigo-500" />
+                            <span>{t('terminalMenu.explain')}</span>
                         </button>
 
                         <button
@@ -96,15 +95,15 @@ export function TerminalContextMenu({
                                 onClose();
                             }}
                             disabled={!hasSelection}
-                            className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-orange-500/10 hover:text-orange-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed group"
+                            className="flex w-full items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-orange-500/10 hover:text-orange-500 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                            <AlertTriangle className="w-4 h-4 text-orange-500" />
-                            <span>AI 修复 (Fix)</span>
+                            <AlertTriangle className="h-4 w-4 text-orange-500" />
+                            <span>{t('terminalMenu.fix')}</span>
                         </button>
                     </>
                 )}
             </div>
         </>,
-        document.body
+        document.body,
     );
 }

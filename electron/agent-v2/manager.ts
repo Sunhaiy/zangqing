@@ -41,6 +41,7 @@ interface ResumeAgentInput {
 
 const DEPLOY_INTENT_RE = /(?:\bdeploy\b|\bpublish\b|部署|发布|上线)/i;
 const LOCAL_PROJECT_PATH_RE = /[A-Za-z]:\\[^\r\n"'`<>|]+|\/(?:Users|home|opt|srv|var|tmp)[^\r\n"'`<>|]*/g;
+const GITHUB_PROJECT_URL_RE = /https?:\/\/github\.com\/[^\s"'`<>]+/ig;
 const CONTINUE_INTENT_RE = /^(继续|继续处理|继续执行|继续部署|接着|接着做|再试一次|重试|continue|resume|retry)\s*[。.!！]?$/i;
 
 function now() {
@@ -128,11 +129,20 @@ function toolCallSummary(name: string, args: Record<string, unknown>): string {
   return mainArg ? `${label}: ${mainArg}` : label;
 }
 
+function cleanDeployCandidate(input: string): string {
+  return input.trim().replace(/[),.;!?，。；！]+$/, '');
+}
+
 function extractDeployProjectPath(input: string, knownPaths: string[]): string | null {
+  const githubMatches = input.match(GITHUB_PROJECT_URL_RE) || [];
+  if (githubMatches.length > 0) {
+    return cleanDeployCandidate(githubMatches[0] || '');
+  }
+
   const matches = input.match(LOCAL_PROJECT_PATH_RE) || [];
   if (matches.length > 0) {
     const bestMatch = matches.sort((a, b) => b.length - a.length)[0];
-    return bestMatch ? bestMatch.trim() : null;
+    return bestMatch ? cleanDeployCandidate(bestMatch) : null;
   }
   return knownPaths.length > 0 ? (knownPaths[knownPaths.length - 1] || null) : null;
 }
@@ -512,14 +522,14 @@ export class AgentV2Manager {
   private async tryDirectDeployRoute(session: AgentThreadSession, goal: string): Promise<boolean> {
     if (!DEPLOY_INTENT_RE.test(goal)) return false;
 
-    const projectRoot = extractDeployProjectPath(goal, session.knownProjectPaths);
-    if (!projectRoot) return false;
+    const projectSource = extractDeployProjectPath(goal, session.knownProjectPaths);
+    if (!projectSource) return false;
 
     const step: PlanState['plan'][number] = {
       id: session.planState.plan.length + 1,
-      description: `自动部署项目: ${projectRoot}`,
+      description: `自动部署项目: ${projectSource}`,
       status: 'in_progress',
-      command: `deploy ${projectRoot}`,
+      command: `deploy ${projectSource}`,
     };
     session.planState.plan.push(step);
     this.emitPlanUpdate(session, 'executing');
@@ -538,7 +548,7 @@ export class AgentV2Manager {
       timestamp: Date.now(),
       toolCall: {
         name: 'deploy_project',
-        command: `deploy ${projectRoot}`,
+        command: `deploy ${projectSource}`,
         status: 'pending',
       },
     });
@@ -552,14 +562,14 @@ export class AgentV2Manager {
           type: 'function',
           function: {
             name: 'deploy_project',
-            arguments: JSON.stringify({ projectRoot }),
+            arguments: JSON.stringify({ projectRoot: projectSource }),
           },
         },
       ],
     });
 
     try {
-      const result = await this.toolRegistry.execute('deploy_project', { projectRoot }, session);
+      const result = await this.toolRegistry.execute('deploy_project', { projectRoot: projectSource }, session);
       step.status = result.ok ? 'completed' : 'failed';
       step.result = result.ok ? clip(result.content, 240) : undefined;
       step.error = result.ok ? undefined : clip(result.content, 240);
@@ -572,7 +582,7 @@ export class AgentV2Manager {
         tool_call_id: directToolCallId,
         content: toolContent,
       });
-      this.emitToolResultMessage(session, 'deploy_project', `deploy ${projectRoot}`, result.content, result.ok);
+      this.emitToolResultMessage(session, 'deploy_project', `deploy ${projectSource}`, result.content, result.ok);
       this.emitPlanUpdate(session, 'executing');
 
       if (result.ok) {
@@ -612,7 +622,7 @@ export class AgentV2Manager {
       this.emitToolResultMessage(
         session,
         'deploy_project',
-        `deploy ${projectRoot}`,
+        `deploy ${projectSource}`,
         error?.message || String(error),
         false,
       );
@@ -831,6 +841,14 @@ export class AgentV2Manager {
       const normalized = value.includes('\\')
         ? path.normalize(value.trim())
         : value.trim();
+      if (normalized && !session.knownProjectPaths.includes(normalized)) {
+        session.knownProjectPaths.push(normalized);
+      }
+    }
+
+    const githubMatches = input.match(GITHUB_PROJECT_URL_RE) || [];
+    for (const value of githubMatches) {
+      const normalized = cleanDeployCandidate(value);
       if (normalized && !session.knownProjectPaths.includes(normalized)) {
         session.knownProjectPaths.push(normalized);
       }

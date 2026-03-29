@@ -1,9 +1,91 @@
-// AI Service - Handles communication with AI providers (DeepSeek, OpenAI, etc.)
-
-import { AIConfig, AICompletionRequest, AICompletionResponse, AI_PROVIDER_CONFIGS, ChatMessage, ToolDefinition, ToolCall, ToolCompletionResponse, AIProviderProfile } from '../shared/aiTypes';
+import {
+    AIConfig,
+    AICompletionRequest,
+    AICompletionResponse,
+    AI_PROVIDER_CONFIGS,
+    AIProviderProfile,
+    ChatMessage,
+    ToolCompletionResponse,
+    ToolDefinition,
+} from '../shared/aiTypes';
 
 class AIService {
     private config: AIConfig | null = null;
+
+    setConfig(config: AIConfig) {
+        this.config = config;
+    }
+
+    getConfig(): AIConfig | null {
+        return this.config;
+    }
+
+    isConfigured(): boolean {
+        if (!this.config) return false;
+        if (this.config.provider === 'ollama') return true;
+        return Boolean(this.config.apiKey && this.config.apiKey.length > 0);
+    }
+
+    setConfigFromProfile(profile: AIProviderProfile): void {
+        const providerConfig = AI_PROVIDER_CONFIGS[profile.provider];
+        this.config = {
+            provider: profile.provider,
+            apiKey: profile.apiKey,
+            baseUrl: profile.baseUrl || providerConfig?.baseUrl || undefined,
+            model: profile.model || providerConfig?.defaultModel || undefined,
+            privacyMode: this.config?.privacyMode ?? false,
+        };
+    }
+
+    private configFromProfile(profile: AIProviderProfile): AIConfig {
+        const providerConfig = AI_PROVIDER_CONFIGS[profile.provider];
+        return {
+            provider: profile.provider,
+            apiKey: profile.apiKey,
+            baseUrl: profile.baseUrl || providerConfig?.baseUrl || undefined,
+            model: profile.model || providerConfig?.defaultModel || undefined,
+            privacyMode: this.config?.privacyMode ?? false,
+        };
+    }
+
+    sanitize(text: string): string {
+        if (!this.config?.privacyMode) return text;
+
+        return text
+            .replace(/\b\d{1,3}(\.\d{1,3}){3}\b/g, '[IP_REDACTED]')
+            .replace(/authorization\s*:\s*bearer\s+[^\s"']+/gi, 'Authorization: Bearer [REDACTED]')
+            .replace(/\bbearer\s+[A-Za-z0-9._~+/=-]{12,}\b/g, 'Bearer [REDACTED]')
+            .replace(/\b(password|passwd|pwd)\b\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/gi, '$1=[REDACTED]')
+            .replace(/\b(api[_-]?key|token|secret|client_secret|access_token|refresh_token)\b\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/gi, '$1=[REDACTED]')
+            .replace(/-----BEGIN[^-]+-----[\s\S]*?-----END[^-]+-----/g, '[SSH_KEY_REDACTED]')
+            .replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^:@\s/]+)(?::([^@\s]+))?@/gi, (_match, protocol) => `${protocol}[REDACTED]@`)
+            .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASS|API_KEY|PRIVATE_KEY|DATABASE_URL))\b\s*=\s*("[^"]*"|'[^']*'|\S+)/g, '$1=[REDACTED]')
+            .replace(/export\s+\w+_KEY\s*=\s*("[^"]*"|'[^']*'|\S+)/gi, 'export [KEY_REDACTED]')
+            .replace(/export\s+\w+_SECRET\s*=\s*("[^"]*"|'[^']*'|\S+)/gi, 'export [SECRET_REDACTED]');
+    }
+
+    private getEndpoint(baseUrl: string, isOllama: boolean): string {
+        const cleanBase = baseUrl.replace(/\/+$/, '');
+        if (isOllama) {
+            return cleanBase.endsWith('/api/chat') ? cleanBase : `${cleanBase}/api/chat`;
+        }
+        if (cleanBase.endsWith('/chat/completions')) return cleanBase;
+        if (/\/v\d+$/.test(cleanBase)) return `${cleanBase}/chat/completions`;
+        return `${cleanBase}/v1/chat/completions`;
+    }
+
+    private async proxyFetch(url: string, options: { method: string; headers: Record<string, string>; body: string }): Promise<{ ok: boolean; status: number; text(): Promise<string> }> {
+        const el = (window as any).electron;
+        if (el?.aiFetch) {
+            const result = await el.aiFetch({ url, ...options });
+            return {
+                ok: result.ok,
+                status: result.status,
+                text: async () => result.body,
+            };
+        }
+        return fetch(url, options);
+    }
 
     private async formatHttpError(response: { status: number; text(): Promise<string> }, fallbackPrefix = 'AI request failed'): Promise<Error> {
         const rawText = await response.text();
@@ -16,123 +98,30 @@ class AIService {
             const requestId = parsed?.error?.request_id || parsed?.request_id;
 
             if (response.status === 429 || code === 'ServerOverloaded' || type === 'TooManyRequests') {
-                const detail = message || 'The AI service is currently overloaded.';
+                const detail = message || 'The AI service is temporarily overloaded.';
                 const suffix = requestId ? ` Request ID: ${requestId}` : '';
-                return new Error(`AI 服务当前繁忙，请稍后重试或切换模型。${detail}${suffix}`);
+                return new Error(`AI service is busy right now. Please retry in a moment or switch models. ${detail}${suffix}`.trim());
             }
 
             if (message) {
                 return new Error(`${fallbackPrefix}: ${message}`);
             }
         } catch {
-            // Ignore JSON parse errors and fall back to raw text.
+            // Fall through to raw text error handling.
         }
 
         if (response.status === 429) {
-            return new Error('AI 服务当前繁忙，请稍后重试或切换模型。');
+            return new Error('AI service is busy right now. Please retry in a moment or switch models.');
         }
 
         return new Error(`${fallbackPrefix}: ${rawText}`);
     }
 
-    setConfig(config: AIConfig) {
-        this.config = config;
-    }
-
-    getConfig(): AIConfig | null {
-        return this.config;
-    }
-
-    isConfigured(): boolean {
-        if (!this.config) return false;
-        // Ollama doesn't require API key
-        if (this.config.provider === 'ollama') return true;
-        return !!(this.config.apiKey && this.config.apiKey.length > 0);
-    }
-
-    // Build AIConfig from a saved profile
-    setConfigFromProfile(profile: AIProviderProfile): void {
-        const providerConfig = AI_PROVIDER_CONFIGS[profile.provider];
-        this.config = {
-            provider: profile.provider,
-            apiKey: profile.apiKey,
-            baseUrl: profile.baseUrl || providerConfig?.baseUrl || undefined,
-            model: profile.model || providerConfig?.defaultModel || undefined,
-            privacyMode: false, // global setting handled separately
-        };
-    }
-
-    // Build a temporary AIConfig from a profile (does NOT change this.config)
-    private configFromProfile(profile: AIProviderProfile): AIConfig {
-        const providerConfig = AI_PROVIDER_CONFIGS[profile.provider];
-        return {
-            provider: profile.provider,
-            apiKey: profile.apiKey,
-            baseUrl: profile.baseUrl || providerConfig?.baseUrl || undefined,
-            model: profile.model || providerConfig?.defaultModel || undefined,
-            privacyMode: this.config?.privacyMode ?? false,
-        };
-    }
-
-    // Privacy mode: sanitize sensitive information
-    sanitize(text: string): string {
-        if (!this.config?.privacyMode) return text;
-
-        return text
-            // IP addresses
-            .replace(/\b\d{1,3}(\.\d{1,3}){3}\b/g, '[IP_REDACTED]')
-            // Passwords in various formats
-            .replace(/password[=:]\s*\S+/gi, 'password=[REDACTED]')
-            .replace(/passwd[=:]\s*\S+/gi, 'passwd=[REDACTED]')
-            // API keys and tokens
-            .replace(/api[_-]?key[=:]\s*\S+/gi, 'api_key=[REDACTED]')
-            .replace(/token[=:]\s*\S+/gi, 'token=[REDACTED]')
-            .replace(/secret[=:]\s*\S+/gi, 'secret=[REDACTED]')
-            // SSH keys (very long base64 strings)
-            .replace(/-----BEGIN[^-]+-----[\s\S]*?-----END[^-]+-----/g, '[SSH_KEY_REDACTED]')
-            // Common env var patterns
-            .replace(/export\s+\w+_KEY=\S+/gi, 'export [KEY_REDACTED]')
-            .replace(/export\s+\w+_SECRET=\S+/gi, 'export [SECRET_REDACTED]');
-    }
-
-    // Build the final API endpoint URL
-    private getEndpoint(baseUrl: string, isOllama: boolean): string {
-        const cleanBase = baseUrl.replace(/\/+$/, '');
-
-        if (isOllama) {
-            if (cleanBase.endsWith('/api/chat')) return cleanBase;
-            return `${cleanBase}/api/chat`;
-        } else {
-            if (cleanBase.endsWith('/chat/completions')) return cleanBase;
-            // /v1 or /v3 (Volcengine CodePlan uses /v3) — append /chat/completions
-            if (/\/v\d+$/.test(cleanBase)) return `${cleanBase}/chat/completions`;
-            return `${cleanBase}/v1/chat/completions`;
-        }
-    }
-
-    // Proxy fetch through Electron main process to avoid renderer CORS restrictions.
-    // Falls back to native fetch in non-Electron environments (web/test).
-    private async proxyFetch(url: string, options: { method: string; headers: Record<string, string>; body: string }): Promise<{ ok: boolean; status: number; text(): Promise<string> }> {
-        const el = (window as any).electron;
-        if (el?.aiFetch) {
-            const result = await el.aiFetch({ url, ...options });
-            return {
-                ok: result.ok,
-                status: result.status,
-                text: async () => result.body,
-            };
-        }
-        // Fallback: direct fetch (works in non-Electron / dev server with CORS)
-        return fetch(url, options);
-    }
-
-    // Non-streaming completion
     async complete(request: AICompletionRequest): Promise<AICompletionResponse> {
         if (!this.config) {
             throw new Error('AI service not configured. Please set your API key in Settings.');
         }
 
-        // For non-Ollama providers, require API key
         if (this.config.provider !== 'ollama' && !this.config.apiKey) {
             throw new Error('API key required. Please set your API key in Settings.');
         }
@@ -140,48 +129,45 @@ class AIService {
         const providerConfig = AI_PROVIDER_CONFIGS[this.config.provider];
         const baseUrl = this.config.baseUrl || providerConfig.baseUrl;
         const model = this.config.model || providerConfig.defaultModel;
-
-        // Sanitize messages if privacy mode is on
-        const sanitizedMessages = request.messages.map(msg => ({
-            ...msg,
-            content: this.sanitize(msg.content || '')
-        }));
-
-        // Choose endpoint and headers based on provider
         const isOllama = this.config.provider === 'ollama';
         const endpoint = this.getEndpoint(baseUrl, isOllama);
 
+        const sanitizedMessages = request.messages.map((msg) => ({
+            ...msg,
+            content: this.sanitize(msg.content || ''),
+        }));
+
         const headers: Record<string, string> = {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
         };
 
         if (this.config.apiKey) {
-            headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+            headers.Authorization = `Bearer ${this.config.apiKey}`;
         }
 
-        // OpenRouter requires HTTP-Referer
         if (this.config.provider === 'openrouter') {
             headers['HTTP-Referer'] = 'https://sshtool.app';
             headers['X-Title'] = 'SSH Tool';
         }
 
-        // Build request body - Ollama uses slightly different format
-        const requestBody = isOllama ? {
-            model,
-            messages: sanitizedMessages,
-            stream: false
-        } : {
-            model,
-            messages: sanitizedMessages,
-            temperature: request.temperature ?? 0.7,
-            max_tokens: request.maxTokens ?? 2048,
-            stream: false
-        };
+        const requestBody = isOllama
+            ? {
+                model,
+                messages: sanitizedMessages,
+                stream: false,
+            }
+            : {
+                model,
+                messages: sanitizedMessages,
+                temperature: request.temperature ?? 0.7,
+                max_tokens: request.maxTokens ?? 2048,
+                stream: false,
+            };
 
         const response = await this.proxyFetch(endpoint, {
             method: 'POST',
             headers,
-            body: JSON.stringify(requestBody)
+            body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
@@ -190,27 +176,24 @@ class AIService {
 
         const data = JSON.parse(await response.text());
 
-        // Ollama response format is different
         if (isOllama) {
             return {
                 content: data.message?.content || '',
-                finishReason: 'stop'
+                finishReason: 'stop',
             };
         }
 
         return {
             content: data.choices?.[0]?.message?.content || '',
-            finishReason: data.choices?.[0]?.finish_reason
+            finishReason: data.choices?.[0]?.finish_reason,
         };
     }
 
-    // Streaming completion with callback
     async *streamComplete(request: AICompletionRequest): AsyncGenerator<string, void, unknown> {
         if (!this.config) {
             throw new Error('AI service not configured. Please set your API key in Settings.');
         }
 
-        // For non-Ollama providers, require API key
         if (this.config.provider !== 'ollama' && !this.config.apiKey) {
             throw new Error('API key required. Please set your API key in Settings.');
         }
@@ -218,22 +201,20 @@ class AIService {
         const providerConfig = AI_PROVIDER_CONFIGS[this.config.provider];
         const baseUrl = this.config.baseUrl || providerConfig.baseUrl;
         const model = this.config.model || providerConfig.defaultModel;
-
-        // Sanitize messages if privacy mode is on
-        const sanitizedMessages = request.messages.map(msg => ({
-            ...msg,
-            content: this.sanitize(msg.content || '')
-        }));
-
         const isOllama = this.config.provider === 'ollama';
         const endpoint = this.getEndpoint(baseUrl, isOllama);
 
+        const sanitizedMessages = request.messages.map((msg) => ({
+            ...msg,
+            content: this.sanitize(msg.content || ''),
+        }));
+
         const headers: Record<string, string> = {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
         };
 
         if (this.config.apiKey) {
-            headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+            headers.Authorization = `Bearer ${this.config.apiKey}`;
         }
 
         if (this.config.provider === 'openrouter') {
@@ -241,55 +222,59 @@ class AIService {
             headers['X-Title'] = 'SSH Tool';
         }
 
-        const requestBody = isOllama ? {
-            model,
-            messages: sanitizedMessages,
-            stream: true
-        } : {
-            model,
-            messages: sanitizedMessages,
-            temperature: request.temperature ?? 0.7,
-            max_tokens: request.maxTokens ?? 2048,
-            stream: true
-        };
+        const requestBody = isOllama
+            ? {
+                model,
+                messages: sanitizedMessages,
+                stream: true,
+            }
+            : {
+                model,
+                messages: sanitizedMessages,
+                temperature: request.temperature ?? 0.7,
+                max_tokens: request.maxTokens ?? 2048,
+                stream: true,
+            };
 
         const response = await this.proxyFetch(endpoint, {
             method: 'POST',
             headers,
-            body: JSON.stringify(requestBody)
+            body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
             throw await this.formatHttpError(response);
         }
 
-        // For streaming, parse the full SSE body returned by proxyFetch
         const fullBody = await response.text();
         const lines = fullBody.split('\n');
+
         for (const line of lines) {
-            if (line.startsWith('data: ')) {
-                const data = line.slice(6);
-                if (data === '[DONE]') return;
-                try {
-                    const parsed = JSON.parse(data);
-                    const content = isOllama
-                        ? parsed.message?.content
-                        : parsed.choices?.[0]?.delta?.content;
-                    if (content) yield content;
-                } catch { }
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6);
+            if (data === '[DONE]') return;
+
+            try {
+                const parsed = JSON.parse(data);
+                const content = isOllama
+                    ? parsed.message?.content
+                    : parsed.choices?.[0]?.delta?.content;
+                if (content) {
+                    yield content;
+                }
+            } catch {
+                // Ignore malformed SSE chunks.
             }
         }
     }
 
-    // Non-streaming completion with Function Calling (tools)
     async completeWithTools(request: {
         messages: ChatMessage[];
         tools: ToolDefinition[];
         temperature?: number;
-        overrideModel?: string;   // switch model per-request without changing config
-        overrideProfile?: AIProviderProfile;  // use a completely different provider's API key/base
+        overrideModel?: string;
+        overrideProfile?: AIProviderProfile;
     }): Promise<ToolCompletionResponse> {
-        // If an override profile is provided, use it instead of global config
         const effectiveConfig = request.overrideProfile
             ? this.configFromProfile(request.overrideProfile)
             : this.config;
@@ -303,19 +288,18 @@ class AIService {
 
         const providerConfig = AI_PROVIDER_CONFIGS[effectiveConfig.provider];
         const baseUrl = effectiveConfig.baseUrl || providerConfig.baseUrl;
-        // overrideModel > config model > provider default
         const model = request.overrideModel || effectiveConfig.model || providerConfig.defaultModel;
         const isOllama = effectiveConfig.provider === 'ollama';
         const endpoint = this.getEndpoint(baseUrl, isOllama);
 
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (effectiveConfig.apiKey) headers['Authorization'] = `Bearer ${effectiveConfig.apiKey}`;
+        if (effectiveConfig.apiKey) headers.Authorization = `Bearer ${effectiveConfig.apiKey}`;
         if (effectiveConfig.provider === 'openrouter') {
             headers['HTTP-Referer'] = 'https://sshtool.app';
             headers['X-Title'] = 'SSH Tool';
         }
 
-        const sanitizedMessages = request.messages.map(msg => ({
+        const sanitizedMessages = request.messages.map((msg) => ({
             ...msg,
             content: msg.content ? this.sanitize(msg.content) : msg.content,
         }));
@@ -331,38 +315,35 @@ class AIService {
         const response = await this.proxyFetch(endpoint, {
             method: 'POST',
             headers,
-            body: JSON.stringify(requestBody)
+            body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
             const errorText = await response.text();
 
-            // Handle models that don't support native function calling
-            // They output <function=name>{"arg":"val"} which the API rejects with tool_use_failed
             try {
                 const errorJson = JSON.parse(errorText);
-                const failedGen = errorJson?.error?.failed_generation;
-                if (errorJson?.error?.code === 'tool_use_failed' && failedGen) {
-                    // Parse: <function=execute_ssh_command>{"command": "uptime"}
-                    const funcMatch = failedGen.match(/<function=(\w+)>([\s\S]*)/);
+                const failedGeneration = errorJson?.error?.failed_generation;
+                if (errorJson?.error?.code === 'tool_use_failed' && failedGeneration) {
+                    const funcMatch = failedGeneration.match(/<function=(\w+)>([\s\S]*)/);
                     if (funcMatch) {
-                        const funcName = funcMatch[1];
-                        const argsStr = funcMatch[2].trim();
                         return {
                             content: null,
                             toolCalls: [{
                                 id: `call_${Date.now()}`,
                                 type: 'function' as const,
                                 function: {
-                                    name: funcName,
-                                    arguments: argsStr,
-                                }
+                                    name: funcMatch[1],
+                                    arguments: funcMatch[2].trim(),
+                                },
                             }],
                             finishReason: 'tool_calls',
                         };
                     }
                 }
-            } catch { }
+            } catch {
+                // Ignore and continue to regular error formatting below.
+            }
 
             try {
                 const parsed = JSON.parse(errorText);
@@ -372,8 +353,9 @@ class AIService {
                 const requestId = parsed?.error?.request_id || parsed?.request_id;
 
                 if (response.status === 429 || code === 'ServerOverloaded' || type === 'TooManyRequests') {
+                    const detail = message ? ` ${message}` : '';
                     const suffix = requestId ? ` Request ID: ${requestId}` : '';
-                    throw new Error(`AI 服务当前繁忙，请稍后重试或切换模型。${message || ''}${suffix}`.trim());
+                    throw new Error(`AI service is busy right now. Please retry in a moment or switch models.${detail}${suffix}`.trim());
                 }
 
                 if (message) {
@@ -386,7 +368,7 @@ class AIService {
             }
 
             if (response.status === 429) {
-                throw new Error('AI 服务当前繁忙，请稍后重试或切换模型。');
+                throw new Error('AI service is busy right now. Please retry in a moment or switch models.');
             }
 
             throw new Error(`AI request failed: ${errorText}`);
@@ -401,7 +383,6 @@ class AIService {
             totalTokens: data.usage.total_tokens ?? 0,
         } : undefined;
 
-        // If model returned tool_calls natively, use them
         if (message?.tool_calls?.length) {
             return {
                 content: message.content || null,
@@ -413,7 +394,6 @@ class AIService {
             };
         }
 
-        // Fallback: parse <function=name>{"arg":"val"} from content text
         const content = message?.content || '';
         const funcMatch = content.match(/<function=(\w+)>([\s\S]*?)(?:<\/function>|$)/);
         if (funcMatch) {
@@ -425,7 +405,7 @@ class AIService {
                     function: {
                         name: funcMatch[1],
                         arguments: funcMatch[2].trim(),
-                    }
+                    },
                 }],
                 finishReason: 'tool_calls',
                 usage,
@@ -446,40 +426,37 @@ class AIService {
     async textToCommand(naturalLanguage: string, context?: string): Promise<string> {
         const messages: ChatMessage[] = [
             { role: 'system', content: (await import('../shared/aiTypes')).AI_SYSTEM_PROMPTS.textToCommand },
-            { role: 'user', content: context ? `当前目录: ${context}\n\n${naturalLanguage}` : naturalLanguage }
+            { role: 'user', content: context ? `Current path: ${context}\n\n${naturalLanguage}` : naturalLanguage },
         ];
 
         const response = await this.complete({ messages, temperature: 0.3 });
         return response.content.trim();
     }
 
-    // Helper: Error analysis
     async analyzeError(errorText: string): Promise<string> {
         const messages: ChatMessage[] = [
             { role: 'system', content: (await import('../shared/aiTypes')).AI_SYSTEM_PROMPTS.errorAnalysis },
-            { role: 'user', content: errorText }
+            { role: 'user', content: errorText },
         ];
 
         const response = await this.complete({ messages, temperature: 0.5 });
         return response.content;
     }
 
-    // Helper: Log summary
     async summarizeLogs(logText: string): Promise<string> {
         const messages: ChatMessage[] = [
             { role: 'system', content: (await import('../shared/aiTypes')).AI_SYSTEM_PROMPTS.logSummary },
-            { role: 'user', content: logText }
+            { role: 'user', content: logText },
         ];
 
         const response = await this.complete({ messages, temperature: 0.3 });
         return response.content;
     }
 
-    // Helper: Explain command/output
     async explainCommand(text: string): Promise<string> {
         const messages: ChatMessage[] = [
             { role: 'system', content: (await import('../shared/aiTypes')).AI_SYSTEM_PROMPTS.explainCommand },
-            { role: 'user', content: text }
+            { role: 'user', content: text },
         ];
 
         const response = await this.complete({ messages, temperature: 0.3 });
@@ -487,5 +464,4 @@ class AIService {
     }
 }
 
-// Singleton instance
 export const aiService = new AIService();

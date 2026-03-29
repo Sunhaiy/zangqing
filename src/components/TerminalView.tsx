@@ -276,7 +276,8 @@ export function TerminalView({ connectionId }: TerminalViewProps) {
           type={aiPopover.type}
           onClose={() => setAiPopover(null)}
           onApplyFix={(cmd) => {
-            (window as any).electron?.writeTerminal(connectionId, cmd);
+            const command = cmd.endsWith('\n') ? cmd : `${cmd}\n`;
+            (window as any).electron?.writeTerminal(connectionId, command);
           }}
         />
       )}

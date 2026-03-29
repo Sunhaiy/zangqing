@@ -96,7 +96,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     aiBaseUrl: '',
     aiModel: '',
     aiPrivacyMode: false,
-    aiSendShortcut: 'ctrlEnter',
+    aiSendShortcut: 'enter',
     agentControlMode: 'auto',
     agentWhitelist: ['ls', 'pwd', 'whoami', 'cat', 'head', 'tail', 'df', 'free', 'uptime', 'uname', 'date', 'top', 'htop', 'ps', 'netstat', 'ss', 'ip', 'ifconfig', 'ping', 'traceroute', 'dig', 'nslookup', 'curl', 'wget', 'du', 'find', 'grep', 'wc', 'echo', 'which'],
 
@@ -254,7 +254,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         (window as any).electron.storeSet('aiProfiles', updated);
         // If editing the active profile, re-apply config
         if (state.activeProfileId === profile.id) {
-            aiService.setConfigFromProfile(profile);
+            const providerConfig = AI_PROVIDER_CONFIGS[profile.provider];
+            aiService.setConfig({
+                provider: profile.provider,
+                apiKey: profile.apiKey,
+                baseUrl: profile.baseUrl || providerConfig?.baseUrl || undefined,
+                model: profile.model || providerConfig?.defaultModel || undefined,
+                privacyMode: state.aiPrivacyMode
+            });
         }
     },
 
@@ -287,7 +294,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
                 aiBaseUrl: profile.baseUrl,
                 aiModel: profile.model,
             });
-            aiService.setConfigFromProfile(profile);
+            const providerConfig = AI_PROVIDER_CONFIGS[profile.provider];
+            aiService.setConfig({
+                provider: profile.provider,
+                apiKey: profile.apiKey,
+                baseUrl: profile.baseUrl || providerConfig?.baseUrl || undefined,
+                model: profile.model || providerConfig?.defaultModel || undefined,
+                privacyMode: state.aiPrivacyMode
+            });
         }
     },
 
@@ -358,7 +372,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const aiBaseUrl = (savedAiBaseUrl as string) || '';
         const aiModel = (savedAiModel as string) || '';
         const aiPrivacyMode = typeof savedAiPrivacyMode === 'boolean' ? savedAiPrivacyMode : false;
-        const aiSendShortcut = (savedAiSendShortcut as 'enter' | 'ctrlEnter') || 'ctrlEnter';
+        const aiSendShortcut = (savedAiSendShortcut as 'enter' | 'ctrlEnter') || 'enter';
         const agentControlMode = (savedAgentControlMode as 'auto' | 'approval' | 'whitelist') || 'auto';
         const agentWhitelist = Array.isArray(savedAgentWhitelist) ? savedAgentWhitelist : get().agentWhitelist;
 
@@ -393,7 +407,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         // Activate the profile → sets aiService config
         const activeProfile = profiles.find(p => p.id === activeProfileId);
         if (activeProfile) {
-            aiService.setConfigFromProfile(activeProfile);
+            const providerConfig = AI_PROVIDER_CONFIGS[activeProfile.provider];
+            aiService.setConfig({
+                provider: activeProfile.provider,
+                apiKey: activeProfile.apiKey,
+                baseUrl: activeProfile.baseUrl || providerConfig?.baseUrl || undefined,
+                model: activeProfile.model || providerConfig?.defaultModel || undefined,
+                privacyMode: aiPrivacyMode
+            });
         } else if (aiApiKey || aiProvider === 'ollama') {
             // Fallback: use old flat config
             aiService.setConfig({
