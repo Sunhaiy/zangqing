@@ -49,6 +49,85 @@ export interface LLMToolResponse {
     modelUsed?: string;
 }
 
+export class LLMRequestError extends Error {
+    status: number;
+    code?: string;
+    type?: string;
+    requestId?: string;
+    retryable: boolean;
+
+    constructor(
+        message: string,
+        options: {
+            status: number;
+            code?: string;
+            type?: string;
+            requestId?: string;
+            retryable?: boolean;
+        },
+    ) {
+        super(message);
+        this.name = 'LLMRequestError';
+        this.status = options.status;
+        this.code = options.code;
+        this.type = options.type;
+        this.requestId = options.requestId;
+        this.retryable = Boolean(options.retryable);
+    }
+}
+
+function parseLLMError(rawText: string, status: number, fallbackPrefix: string): LLMRequestError {
+    try {
+        const parsed = JSON.parse(rawText);
+        const code = parsed?.error?.code;
+        const type = parsed?.error?.type;
+        const message = parsed?.error?.message;
+        const requestId = parsed?.error?.request_id || parsed?.request_id;
+
+        if (status === 429 || code === 'ServerOverloaded' || type === 'TooManyRequests') {
+            const detail = message || 'AI service is temporarily overloaded.';
+            const suffix = requestId ? ` Request ID: ${requestId}` : '';
+            return new LLMRequestError(
+                `AI 服务当前繁忙，我会保留当前上下文。请稍后重试，或直接发送“继续”让我接着当前任务恢复。${detail}${suffix}`.trim(),
+                {
+                    status,
+                    code,
+                    type,
+                    requestId,
+                    retryable: true,
+                },
+            );
+        }
+
+        if (message) {
+            return new LLMRequestError(`${fallbackPrefix}: ${message}`, {
+                status,
+                code,
+                type,
+                requestId,
+                retryable: status >= 500,
+            });
+        }
+    } catch {
+        // Ignore JSON parse errors and fall back to raw text.
+    }
+
+    if (status === 429) {
+        return new LLMRequestError(
+            'AI 服务当前繁忙，我会保留当前上下文。请稍后重试，或直接发送“继续”让我接着当前任务恢复。',
+            {
+                status,
+                retryable: true,
+            },
+        );
+    }
+
+    return new LLMRequestError(`${fallbackPrefix}: ${rawText.slice(0, 300)}`, {
+        status,
+        retryable: status >= 500,
+    });
+}
+
 export async function callLLM(
     profile: LLMProfile,
     messages: LLMMessage[],
@@ -90,7 +169,7 @@ export async function callLLM(
             signal,
         });
         const text = await res.text();
-        if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${text.slice(0, 300)}`);
+        if (!res.ok) throw parseLLMError(text, res.status, 'Anthropic API request failed');
         const data = JSON.parse(text);
         const block = data?.content?.[0];
         if (block?.type === 'text') return block.text as string;
@@ -131,7 +210,7 @@ export async function callLLM(
         signal,
     });
     const text = await res.text();
-    if (!res.ok) throw new Error(`LLM API ${res.status}: ${text.slice(0, 300)}`);
+    if (!res.ok) throw parseLLMError(text, res.status, 'LLM API request failed');
     const data = JSON.parse(text);
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content === 'string') return content;
@@ -227,7 +306,7 @@ export async function callLLMWithTools(
         } catch {
             // fall through to standard error
         }
-        throw new Error(`LLM API ${res.status}: ${text.slice(0, 400)}`);
+        throw parseLLMError(text, res.status, 'LLM API request failed');
     }
 
     const data = JSON.parse(text);

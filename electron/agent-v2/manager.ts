@@ -5,6 +5,7 @@ import {
   callLLMWithTools,
   LLMMessage,
   LLMProfile,
+  LLMRequestError,
   LLMToolCall,
 } from '../llm.js';
 import { SSHManager } from '../ssh/sshManager.js';
@@ -37,6 +38,7 @@ interface ResumeAgentInput {
 
 const DEPLOY_INTENT_RE = /(?:\bdeploy\b|\bpublish\b|部署|发布|上线)/i;
 const LOCAL_PROJECT_PATH_RE = /[A-Za-z]:\\[^\r\n"'`<>|]+|\/(?:Users|home|opt|srv|var|tmp)[^\r\n"'`<>|]*/g;
+const CONTINUE_INTENT_RE = /^(继续|继续处理|继续执行|继续部署|接着|接着做|再试一次|重试|continue|resume|retry)\s*[。.!！]?$/i;
 
 function now() {
   return Date.now();
@@ -76,6 +78,14 @@ function summarizeThreadMessages(messages?: AgentRuntimeMessage[]): LLMMessage[]
       role: message.role === 'tool' ? 'assistant' : message.role,
       content: clip(message.content, 1200),
     }));
+}
+
+function findLastSubstantiveUserGoal(messages?: AgentRuntimeMessage[]): string | null {
+  if (!messages?.length) return null;
+  const match = [...messages]
+    .reverse()
+    .find((message) => message.role === 'user' && message.content?.trim() && !isContinueIntent(message.content));
+  return match?.content?.trim() || null;
 }
 
 function makeArtifact(title: string, content: string): AgentArtifact {
@@ -121,6 +131,10 @@ function extractDeployProjectPath(input: string, knownPaths: string[]): string |
   return knownPaths.length > 0 ? (knownPaths[knownPaths.length - 1] || null) : null;
 }
 
+function isContinueIntent(input: string): boolean {
+  return CONTINUE_INTENT_RE.test(input.trim());
+}
+
 export class AgentV2Manager {
   private sessions = new Map<string, AgentThreadSession>();
   private toolRegistry;
@@ -142,8 +156,20 @@ export class AgentV2Manager {
       threadMessages: input.threadMessages,
       resetPlan: true,
     }).catch((error) => {
-      const session = this.sessions.get(sessionId);
+      const session = this.sessions.get(sessionId)!;
+      if (!session) return;
       if (session) {
+        const content = `执行失败：${error?.message || String(error)}`;
+        this.historyPush(session, { role: 'assistant', content });
+        this.emitAssistantMessage(session, {
+          id: `agent-error-${Date.now()}`,
+          role: 'assistant',
+          content,
+          timestamp: Date.now(),
+          isError: true,
+        });
+        this.emitPlanUpdate(session, 'stopped');
+        return;
         this.emitAssistantMessage(session, {
           id: `agent-error-${Date.now()}`,
           role: 'assistant',
@@ -166,8 +192,20 @@ export class AgentV2Manager {
       threadMessages: input.threadMessages,
       resetPlan: false,
     }).catch((error) => {
-      const session = this.sessions.get(sessionId);
+      const session = this.sessions.get(sessionId)!;
+      if (!session) return;
       if (session) {
+        const content = `继续执行失败：${error?.message || String(error)}`;
+        this.historyPush(session, { role: 'assistant', content });
+        this.emitAssistantMessage(session, {
+          id: `agent-error-${Date.now()}`,
+          role: 'assistant',
+          content,
+          timestamp: Date.now(),
+          isError: true,
+        });
+        this.emitPlanUpdate(session, 'stopped');
+        return;
         this.emitAssistantMessage(session, {
           id: `agent-error-${Date.now()}`,
           role: 'assistant',
@@ -221,14 +259,23 @@ export class AgentV2Manager {
     session.profile = options.profile;
     session.webContents = options.webContents;
     session.abortController = new AbortController();
+    const continuingCurrentGoal = isContinueIntent(options.goal) && Boolean(session.planState?.global_goal);
+    const threadGoal = findLastSubstantiveUserGoal(options.threadMessages);
+    const currentStoredGoal = session.planState?.global_goal || '';
+    const effectiveGoal = continuingCurrentGoal
+      ? (!isContinueIntent(currentStoredGoal) && currentStoredGoal ? currentStoredGoal : threadGoal || currentStoredGoal || options.goal)
+      : options.goal;
+    const startFresh = options.resetPlan && !continuingCurrentGoal;
     session.consecutiveFailures = 0;
     session.turnCounter = 0;
 
-    if (options.resetPlan) {
-      session.planState = createPlanState(options.goal);
+    if (startFresh) {
+      session.planState = createPlanState(effectiveGoal);
       session.history = summarizeThreadMessages(options.threadMessages);
-    } else {
-      session.planState.global_goal = options.goal;
+    } else if (!continuingCurrentGoal) {
+      session.planState.global_goal = effectiveGoal;
+    } else if (!session.history.length && options.threadMessages?.length) {
+      session.history = summarizeThreadMessages(options.threadMessages);
     }
 
     const remoteHost = options.sshHost || this.sshMgr.getConnectionConfig(session.connectionId)?.host || session.sshHost;
@@ -242,9 +289,9 @@ export class AgentV2Manager {
       docker: 'unknown',
     }));
 
-    this.captureKnownProjectPaths(session, options.goal);
+    this.captureKnownProjectPaths(session, effectiveGoal);
     this.historyPush(session, { role: 'user', content: options.goal });
-    const autoDeployHandled = await this.tryDirectDeployRoute(session, options.goal);
+    const autoDeployHandled = await this.tryDirectDeployRoute(session, effectiveGoal);
     if (autoDeployHandled) {
       session.running = false;
       this.emitPlanUpdate(session, session.aborted ? 'stopped' : 'done');
@@ -306,22 +353,14 @@ export class AgentV2Manager {
 
   private async runLoop(session: AgentThreadSession) {
     const maxTurns = 48;
+    let completed = false;
     try {
       while (!session.aborted && session.turnCounter < maxTurns) {
         this.compactHistoryIfNeeded(session, 'before turn');
         session.turnCounter += 1;
         this.emitPlanUpdate(session, 'executing');
 
-        const response = await callLLMWithTools(
-          session.profile,
-          this.buildConversation(session),
-          this.toolRegistry.definitions,
-          {
-            temperature: 0.2,
-            maxTokens: 2048,
-            signal: session.abortController?.signal,
-          },
-        );
+        const response = await this.callLLMWithRetries(session);
         this.updateContextWindow(session, response.usage);
 
         if (response.content?.trim()) {
@@ -341,7 +380,7 @@ export class AgentV2Manager {
 
         if (!response.toolCalls?.length) {
           session.running = false;
-          this.emitPlanUpdate(session, 'done');
+          completed = true;
           return;
         }
 
@@ -372,8 +411,62 @@ export class AgentV2Manager {
       }
     } finally {
       session.running = false;
-      this.emitPlanUpdate(session, session.aborted ? 'stopped' : 'done');
+      this.emitPlanUpdate(session, session.aborted ? 'stopped' : completed ? 'done' : 'stopped');
     }
+  }
+
+  private async callLLMWithRetries(session: AgentThreadSession) {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await callLLMWithTools(
+          session.profile,
+          this.buildConversation(session),
+          this.toolRegistry.definitions,
+          {
+            temperature: 0.2,
+            maxTokens: 2048,
+            signal: session.abortController?.signal,
+          },
+        );
+      } catch (error: any) {
+        const retryable = error instanceof LLMRequestError
+          ? error.retryable
+          : /(429|ServerOverloaded|TooManyRequests|temporarily overloaded|繁忙)/i.test(error?.message || '');
+        if (!retryable || attempt >= maxAttempts || session.aborted) {
+          throw error;
+        }
+        const waitMs = 1200 * attempt;
+        session.planState.scratchpad = appendScratchpad(
+          session.planState.scratchpad,
+          `AI 服务繁忙，自动重试第 ${attempt} 次，等待 ${waitMs}ms`,
+        );
+        await this.sleep(waitMs, session.abortController?.signal);
+      }
+    }
+    throw new Error('AI 服务重试失败');
+  }
+
+  private sleep(ms: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        cleanup();
+        reject(new Error('Agent aborted'));
+      };
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   private buildConversation(session: AgentThreadSession): LLMMessage[] {

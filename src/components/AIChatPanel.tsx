@@ -42,6 +42,7 @@ interface AIChatPanelProps {
 
 const DEPLOY_INTENT_RE = /(?:\bdeploy\b|\bpublish\b|部署|发布|上线)/i;
 const LOCAL_PROJECT_PATH_RE = /[A-Za-z]:\\[^\r\n"'`<>|]+|\/(?:Users|home|opt|srv|var|tmp)[^\r\n"'`<>|]*/g;
+const CONTINUE_INTENT_RE = /^(继续|继续处理|继续执行|继续部署|接着|接着做|再试一次|重试|continue|resume|retry)\s*[。.!！]?$/i;
 
 function extractDeployProjectPath(input: string): string | null {
     const matches = input.match(LOCAL_PROJECT_PATH_RE);
@@ -649,6 +650,8 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
 
     const handleSend = async () => {
         if (!input.trim() || isLoading) return;
+        const trimmedInput = input.trim();
+        const isContinueMessage = CONTINUE_INTENT_RE.test(trimmedInput);
 
         if (!aiService.isConfigured()) {
             const errorMsg: AgentMessage = {
@@ -664,7 +667,7 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
         const userMsg: AgentMessage = {
             id: Date.now().toString(),
             role: 'user',
-            content: input.trim(),
+            content: trimmedInput,
             timestamp: Date.now(),
         };
 
@@ -672,8 +675,12 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
         onMessagesChange(updatedMessages);
         setInput('');
 
-        // Reset plan state for new message (but NOT when resuming a paused plan)
-        const isResuming = planMode && (planStatus === 'paused' || planStatus === 'waiting_approval') && planStateRef.current !== null;
+        // Reset plan state for a new goal, but preserve it when the user is continuing the same run.
+        const isResuming = planMode
+            && (
+                ((planStatus === 'paused' || planStatus === 'waiting_approval') && planStateRef.current !== null)
+                || (planStatus === 'stopped' && isContinueMessage && (planStateRef.current !== null || messages.length > 0))
+            );
         if (!isResuming) {
             setPlanState(null);
             planStateRef.current = null;
@@ -694,7 +701,7 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
                     userInput: userMsg.content,
                     profile,
                     sshHost: host,
-                    threadMessages: messages,
+                    threadMessages: updatedMessages,
                 });
             } else {
                 setPlanState(null);
@@ -706,7 +713,7 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
                     goal: userMsg.content,
                     profile,
                     sshHost: host,
-                    threadMessages: messages,
+                    threadMessages: updatedMessages,
                 });
             }
         } else {
@@ -754,15 +761,6 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
     const starterPrompts = language === 'zh'
         ? ['把我桌面上的项目部署到这台服务器', '检查这台服务器现在有什么异常', '把服务启动失败的原因查清并修复']
         : ['Deploy a local project to this server', 'Inspect what is unhealthy on this server', 'Find and fix why the service failed to start'];
-    const workspaceTitle = language === 'zh' ? 'AI 对话工作区' : 'AI Conversation Workspace';
-    const workspaceSubtitle = host
-        ? (language === 'zh' ? `当前目标服务器：${host}` : `Working against ${host}`)
-        : (language === 'zh' ? '直接告诉 AI 目标，它会自己继续执行。' : 'Give the AI a goal and let it continue the workflow.');
-    const currentModeLabel = agentControlMode === 'auto'
-        ? (language === 'zh' ? '完全 AI 控制' : 'Full AI Control')
-        : agentControlMode === 'approval'
-            ? (language === 'zh' ? '批准模式' : 'Approval Mode')
-            : (language === 'zh' ? '白名单模式' : 'Whitelist Mode');
     const currentModelLabel = (() => {
         const profile = aiProfiles.find(pp => pp.id === (agentProfileId || activeProfileId));
         if (agentModel) return agentModel;
@@ -786,60 +784,7 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
 
     return (
         <div className={cn("flex h-full flex-col overflow-hidden bg-background/40", className)}>
-            <div className="shrink-0 px-5 pt-5">
-                <div className="mx-auto max-w-5xl overflow-hidden rounded-[26px] border border-border/60 bg-card/90 shadow-[0_16px_36px_rgba(15,23,42,0.08)]">
-                    <div className="flex flex-col gap-4 px-4 py-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0">
-                            <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-background/90 px-3 py-1 text-[11px] font-medium text-foreground/75">
-                                <Bot className="h-3.5 w-3.5" />
-                                {workspaceTitle}
-                            </div>
-                            <div className="mt-3 text-sm font-semibold text-foreground/92">
-                                {latestGoal || (language === 'zh' ? '告诉 AI 一个目标，它会自己拆解并执行。' : 'Give the AI one objective and let it drive the workflow.')}
-                            </div>
-                            <div className="mt-1 text-xs text-muted-foreground/65">
-                                {workspaceSubtitle}
-                            </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2 lg:max-w-[44%] lg:justify-end">
-                            <span className="rounded-full border border-border/70 bg-background/90 px-2.5 py-1 text-[10px] font-medium text-muted-foreground">
-                                {currentModeLabel}
-                            </span>
-                            <span className="rounded-full border border-border/70 bg-background/90 px-2.5 py-1 text-[10px] font-medium text-muted-foreground">
-                                {currentModelLabel}
-                            </span>
-                            <span className="rounded-full border border-border/70 bg-accent/45 px-2.5 py-1 text-[10px] font-medium text-foreground/80">
-                                {runStatusLabel}
-                            </span>
-                        </div>
-                    </div>
-                    {contextWindow && (
-                        <div className="border-t border-border/60 bg-muted/30 px-4 py-3">
-                            <div className="flex items-center justify-between text-[11px] text-muted-foreground/72">
-                                <span>{contextWindowTitle}</span>
-                                <span>{Math.round(contextWindow.percentUsed)}% {contextWindowUsed}</span>
-                            </div>
-                            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted/60">
-                                <div
-                                    className={cn(
-                                        "h-full transition-all duration-500",
-                                        contextWindow.percentUsed >= 85 ? "bg-red-400/85" : contextWindow.percentUsed >= 70 ? "bg-yellow-400/85" : "bg-emerald-400/85",
-                                    )}
-                                    style={{ width: `${Math.min(100, Math.max(2, contextWindow.percentUsed))}%` }}
-                                />
-                            </div>
-                            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground/62">
-                                <span>{contextWindowUsed} {formatTokenCount(contextWindow.promptTokens)} {contextWindowTokens} / {formatTokenCount(contextWindow.limitTokens)}</span>
-                                {contextWindow.compressionCount > 0 && (
-                                    <span className="text-emerald-400/75">{contextWindowAutoCompressed} ×{contextWindow.compressionCount}</span>
-                                )}
-                            </div>
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-5 pt-4">
+            <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-5 pt-5">
                 <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5">
                 {messages.length === 0 && (
                     <div className="flex min-h-[340px] flex-col items-center justify-center rounded-[28px] border border-border/60 bg-card px-6 py-8 text-muted-foreground shadow-[0_18px_42px_rgba(15,23,42,0.06)]">
@@ -960,34 +905,6 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
                         )}
 
                         {/* 鈹€鈹€ Goal 鈹€鈹€ */}
-                        {contextWindow && (
-                            <div className="px-3 py-2 border-b border-border/10 bg-muted/10">
-                                <div className="flex items-center justify-between text-[10px] text-muted-foreground/70">
-                                    <span>{contextWindowTitle}</span>
-                                    <span>{Math.round(contextWindow.percentUsed)}% {contextWindowUsed}</span>
-                                </div>
-                                <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-foreground/70">
-                                    <span>
-                                        {contextWindowUsed} {formatTokenCount(contextWindow.promptTokens)} {contextWindowTokens} / {formatTokenCount(contextWindow.limitTokens)}
-                                    </span>
-                                    {contextWindow.compressionCount > 0 && (
-                                        <span className="text-emerald-400/70">
-                                            {contextWindowAutoCompressed} ×{contextWindow.compressionCount}
-                                        </span>
-                                    )}
-                                </div>
-                                <div className="mt-1 h-1 rounded-full bg-muted/30 overflow-hidden">
-                                    <div
-                                        className={cn(
-                                            "h-full transition-all duration-500",
-                                            contextWindow.percentUsed >= 85 ? "bg-red-400/80" : contextWindow.percentUsed >= 70 ? "bg-yellow-400/80" : "bg-emerald-400/80",
-                                        )}
-                                        style={{ width: `${Math.min(100, Math.max(2, contextWindow.percentUsed))}%` }}
-                                    />
-                                </div>
-                            </div>
-                        )}
-
                         {planState && (
                             <div className="flex items-start gap-2 px-3 py-2 border-b border-border/10">
                                 <Target className="w-3 h-3 text-muted-foreground/40 flex-shrink-0 mt-0.5" />
@@ -1315,7 +1232,49 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
                     </div>
                 </div>
 
-                <div className="relative">
+                <div className="mb-3 overflow-hidden rounded-[22px] border border-border/60 bg-background/55 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] backdrop-blur-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[10px] text-muted-foreground/75">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span className="font-medium text-foreground/75">{contextWindowTitle}</span>
+                            {contextWindow ? (
+                                <>
+                                    <span>{Math.round(contextWindow.percentUsed)}% {contextWindowUsed}</span>
+                                    <span>{contextWindowUsed} {formatTokenCount(contextWindow.promptTokens)} {contextWindowTokens} / {formatTokenCount(contextWindow.limitTokens)}</span>
+                                    {contextWindow.compressionCount > 0 && (
+                                        <span className="text-emerald-400/80">{contextWindowAutoCompressed} ×{contextWindow.compressionCount}</span>
+                                    )}
+                                </>
+                            ) : (
+                                <span>{language === 'zh' ? '当前上下文已就绪' : 'Context ready'}</span>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <span className="rounded-full border border-border/60 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground">{currentModelLabel}</span>
+                            <span className="rounded-full border border-border/60 bg-background/70 px-2 py-1 text-[10px] text-foreground/75">{runStatusLabel}</span>
+                        </div>
+                    </div>
+                    {contextWindow && (
+                        <div className="px-3 pb-2">
+                            <div className="h-1.5 overflow-hidden rounded-full bg-muted/50">
+                                <div
+                                    className={cn(
+                                        "h-full transition-all duration-500",
+                                        contextWindow.percentUsed >= 85 ? "bg-red-400/85" : contextWindow.percentUsed >= 70 ? "bg-yellow-400/85" : "bg-emerald-400/85",
+                                    )}
+                                    style={{ width: `${Math.min(100, Math.max(2, contextWindow.percentUsed))}%` }}
+                                />
+                            </div>
+                        </div>
+                    )}
+                    {latestGoal && (
+                        <div className="border-t border-border/45 px-3 py-2 text-[11px] text-foreground/72">
+                            <span className="text-muted-foreground/65">{language === 'zh' ? '当前目标：' : 'Current goal: '}</span>
+                            <span className="break-words leading-snug">{latestGoal}</span>
+                        </div>
+                    )}
+                </div>
+
+                <div className="relative overflow-hidden rounded-[24px] border border-border/70 bg-background/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-md transition-colors hover:border-border">
                     <textarea
                         ref={textareaRef}
                         value={input}
@@ -1323,7 +1282,7 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
                         onKeyDown={handleKeyDown}
                         placeholder={language === 'zh' ? '告诉 AI 你想完成什么…' : 'Tell the AI what you want to get done…'}
                         rows={1}
-                        className="w-full resize-none overflow-hidden rounded-[22px] border border-border/70 bg-background/92 px-4 py-3 pr-12 text-sm transition-all placeholder:text-muted-foreground/50 hover:border-border hover:bg-card focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50"
+                        className="w-full resize-none overflow-hidden bg-transparent px-4 py-3 pr-12 text-sm text-foreground transition-all placeholder:text-muted-foreground/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                         disabled={isLoading}
                     />
                     {isLoading ? (
@@ -1343,7 +1302,7 @@ export function AIChatPanel({ connectionId, profileId, host, messages, onMessage
                                 "absolute right-2 top-1/2 -translate-y-1/2 rounded-2xl border p-2 transition-all",
                                 input.trim()
                                     ? "border-primary/25 bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-[0_10px_24px_rgba(16,185,129,0.18)]"
-                                    : "border-border/70 bg-muted/55 text-muted-foreground cursor-not-allowed"
+                                    : "border-border/70 bg-muted/40 text-muted-foreground cursor-not-allowed"
                             )}
                             title={aiSendShortcut === 'ctrlEnter' ? '发送 (Ctrl+Enter)' : '发送 (Enter)'}
                         >
