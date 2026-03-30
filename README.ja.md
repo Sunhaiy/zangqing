@@ -17,19 +17,19 @@
 
 ### ダークテーマ
 
-![Main workspace](./b0e89111-1d1b-4072-adea-1dd2ec06831e.png)
+![Main workspace](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/b0e89111-1d1b-4072-adea-1dd2ec06831e.png)
 
-![Agent deployment workspace](./58beebfc-909a-4a29-adc6-6eb42f36bb50.png)
+![Agent deployment workspace](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/58beebfc-909a-4a29-adc6-6eb42f36bb50.png)
 
-![Agent conversation and execution flow](./d2aca14d-b5f3-47c9-8428-fd41e3036f33.png)
+![Agent conversation and execution flow](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/d2aca14d-b5f3-47c9-8428-fd41e3036f33.png)
 
 ### ライトテーマ
 
-![Main workspace light theme](./1e403064-c046-4948-b229-202b99ed692a.png)
+![Main workspace light theme](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/1e403064-c046-4948-b229-202b99ed692a.png)
 
-![Agent deployment workspace light theme](./1e44b065-2b41-4316-8d5f-157bf1323034.png)
+![Agent deployment workspace light theme](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/1e44b065-2b41-4316-8d5f-157bf1323034.png)
 
-![Agent conversation and execution flow light theme](./22174f5b-d599-4a23-a2ee-b738d1b821c7.png)
+![Agent conversation and execution flow light theme](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/22174f5b-d599-4a23-a2ee-b738d1b821c7.png)
 
 ## はじめに
 

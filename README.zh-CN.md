@@ -17,19 +17,19 @@
 
 ### 深色主题
 
-![主工作区](./b0e89111-1d1b-4072-adea-1dd2ec06831e.png)
+![主工作区](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/b0e89111-1d1b-4072-adea-1dd2ec06831e.png)
 
-![Agent 自动部署工作区](./58beebfc-909a-4a29-adc6-6eb42f36bb50.png)
+![Agent 自动部署工作区](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/58beebfc-909a-4a29-adc6-6eb42f36bb50.png)
 
-![Agent 对话与执行过程](./d2aca14d-b5f3-47c9-8428-fd41e3036f33.png)
+![Agent 对话与执行过程](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/d2aca14d-b5f3-47c9-8428-fd41e3036f33.png)
 
 ### 白天主题
 
-![主工作区（白天主题）](./1e403064-c046-4948-b229-202b99ed692a.png)
+![主工作区（白天主题）](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/1e403064-c046-4948-b229-202b99ed692a.png)
 
-![Agent 自动部署工作区（白天主题）](./1e44b065-2b41-4316-8d5f-157bf1323034.png)
+![Agent 自动部署工作区（白天主题）](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/1e44b065-2b41-4316-8d5f-157bf1323034.png)
 
-![Agent 对话与执行过程（白天主题）](./22174f5b-d599-4a23-a2ee-b738d1b821c7.png)
+![Agent 对话与执行过程（白天主题）](https://raw.githubusercontent.com/Sunhaiy/sshtool/main/22174f5b-d599-4a23-a2ee-b738d1b821c7.png)
 
 ## 简介
 
