@@ -91,4 +91,7 @@ export interface AgentThreadSession {
     docker: string;
   };
   knownProjectPaths: string[];
+  activeDeployRunId?: string;
+  activeDeploySource?: string;
+  resumeRequested?: boolean;
 }

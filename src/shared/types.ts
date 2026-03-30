@@ -62,6 +62,8 @@ export interface AgentSessionRuntime {
   knownProjectPaths?: string[];
   agentModel?: string;
   agentProfileId?: string;
+  activeDeployRunId?: string;
+  activeDeploySource?: string;
 }
 
 export interface AgentSession {

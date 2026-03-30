@@ -95,6 +95,8 @@ export function AIChatPanel({
     const [planCollapsed, setPlanCollapsed] = useState(true);
     const [compressedMemory, setCompressedMemory] = useState('');
     const [knownProjectPaths, setKnownProjectPaths] = useState<string[]>([]);
+    const [activeDeployRunId, setActiveDeployRunId] = useState<string | undefined>(undefined);
+    const [activeDeploySource, setActiveDeploySource] = useState<string | undefined>(undefined);
     const planStateRef = useRef<PlanState | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -122,6 +124,8 @@ export function AIChatPanel({
         knownProjectPaths,
         agentModel,
         agentProfileId,
+        activeDeployRunId,
+        activeDeploySource,
     });
 
     // Inject CSS keyframes for AI chat animations (runs once)
@@ -195,6 +199,8 @@ export function AIChatPanel({
         setKnownProjectPaths(runtime?.knownProjectPaths || []);
         setAgentModel(runtime?.agentModel || '');
         setAgentProfileId(runtime?.agentProfileId || '');
+        setActiveDeployRunId(runtime?.activeDeployRunId);
+        setActiveDeploySource(runtime?.activeDeploySource);
         setPendingCommands([]);
         setIsLoading(false);
         isLoadingRef.current = false;
@@ -232,12 +238,12 @@ export function AIChatPanel({
         }, 800);
         return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [messages, planState, planStatus, contextWindow, compressedMemory, knownProjectPaths, agentModel, agentProfileId]);
+    }, [messages, planState, planStatus, contextWindow, compressedMemory, knownProjectPaths, agentModel, agentProfileId, activeDeployRunId, activeDeploySource]);
 
     useEffect(() => {
         onRuntimeChange?.(buildRuntimeSnapshot());
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [planState, planStatus, contextWindow, compressedMemory, knownProjectPaths, agentModel, agentProfileId]);
+    }, [planState, planStatus, contextWindow, compressedMemory, knownProjectPaths, agentModel, agentProfileId, activeDeployRunId, activeDeploySource]);
 
     // Auto-scroll to bottom
     useEffect(() => {
@@ -256,7 +262,7 @@ export function AIChatPanel({
     useEffect(() => {
         const eWin = window as any;
         const cleanPlan = eWin.electron?.onAgentPlanUpdate?.(
-            ({ sessionId: eventSessionId, planState: ps, planPhase, contextWindow: ctxWindow, compressedMemory: nextCompressedMemory, knownProjectPaths: nextKnownProjectPaths }: any) => {
+            ({ sessionId: eventSessionId, planState: ps, planPhase, contextWindow: ctxWindow, compressedMemory: nextCompressedMemory, knownProjectPaths: nextKnownProjectPaths, activeDeployRunId: nextDeployRunId, activeDeploySource: nextDeploySource }: any) => {
                 if (eventSessionId !== sessionIdRef.current) return;
                 setPlanState(ps);
                 planStateRef.current = ps;
@@ -264,6 +270,8 @@ export function AIChatPanel({
                 setPlanStatus(planPhase);
                 setCompressedMemory(nextCompressedMemory || '');
                 setKnownProjectPaths(Array.isArray(nextKnownProjectPaths) ? nextKnownProjectPaths : []);
+                setActiveDeployRunId(typeof nextDeployRunId === 'string' ? nextDeployRunId : undefined);
+                setActiveDeploySource(typeof nextDeploySource === 'string' ? nextDeploySource : undefined);
                 if (['done', 'stopped', 'paused', 'waiting_approval'].includes(planPhase)) {
                     setIsLoading(false);
                     isLoadingRef.current = false;
@@ -1384,7 +1392,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
         const isRead = ['read_file', 'local_read_file', 'remote_read_file'].includes(toolCall.name);
         const isWrite = ['write_file', 'local_write_file', 'remote_write_file'].includes(toolCall.name);
         const isList = ['list_directory', 'local_list_directory', 'remote_list_directory'].includes(toolCall.name);
-        const isDeploy = toolCall.name === 'deploy_project';
+        const isDeploy = toolCall.name === 'deploy_project' || toolCall.name === 'resume_deploy_run';
         const isFileOp = isRead || isWrite || isList;
         const ToolIcon = isRead ? FileText : isWrite ? Pencil : isList ? FolderOpen : isDeploy ? Sparkles : Terminal;
         // Color configs per tool type
@@ -1400,7 +1408,8 @@ function MessageBubble({ message }: { message: AgentMessage }) {
             remote_list_directory: { accent: '#22d3ee', light: 'rgba(34,211,238,0.12)', label: '远程目录' },
             local_exec: { accent: isPending ? '#eab308' : '#22c55e', light: isPending ? 'rgba(234,179,8,0.08)' : 'rgba(34,197,94,0.06)', label: isPending ? '执行本地命令' : '本地命令完成' },
             remote_exec: { accent: isPending ? '#eab308' : '#10b981', light: isPending ? 'rgba(234,179,8,0.08)' : 'rgba(16,185,129,0.06)', label: isPending ? '执行远程命令' : '远程命令完成' },
-            deploy_project: { accent: isPending ? '#eab308' : '#8b5cf6', light: isPending ? 'rgba(234,179,8,0.08)' : 'rgba(139,92,246,0.08)', label: isPending ? '自动部署中' : '部署完成' },
+            deploy_project: { accent: isPending ? '#eab308' : (message.isError ? '#ef4444' : '#8b5cf6'), light: isPending ? 'rgba(234,179,8,0.08)' : (message.isError ? 'rgba(239,68,68,0.08)' : 'rgba(139,92,246,0.08)'), label: isPending ? '自动部署中' : (message.isError ? '部署失败' : '部署步骤已执行') },
+            resume_deploy_run: { accent: isPending ? '#eab308' : (message.isError ? '#ef4444' : '#8b5cf6'), light: isPending ? 'rgba(234,179,8,0.08)' : (message.isError ? 'rgba(239,68,68,0.08)' : 'rgba(139,92,246,0.08)'), label: isPending ? '恢复部署中' : (message.isError ? '恢复失败' : '恢复步骤已执行') },
             execute_ssh_command: { accent: isPending ? '#eab308' : '#10b981', light: isPending ? 'rgba(234,179,8,0.08)' : 'rgba(16,185,129,0.06)', label: isPending ? '等待批准' : '已执行' },
         };
         const colors = colorMap[toolCall.name as keyof typeof colorMap] || colorMap.execute_ssh_command;

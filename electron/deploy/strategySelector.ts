@@ -14,11 +14,13 @@ import { NextStandaloneStrategy } from './strategies/nextStandalone.js';
 import { DockerfileStrategy } from './strategies/dockerfile.js';
 import { DockerComposeStrategy } from './strategies/dockerCompose.js';
 import { PythonSystemdStrategy } from './strategies/pythonSystemd.js';
+import { JavaSystemdStrategy } from './strategies/javaSystemd.js';
 
 export class StrategySelector {
   private strategies: DeployStrategy[] = [
     new DockerComposeStrategy(),
     new DockerfileStrategy(),
+    new JavaSystemdStrategy(),
     new NextStandaloneStrategy(),
     new StaticNginxStrategy(),
     new NodeSystemdStrategy(),
@@ -33,7 +35,9 @@ export class StrategySelector {
       }
     }
 
-    const strategy = this.strategies.find((item) => item.supports(project, server));
+    const strategy = this.strategies
+      .filter((item) => item.supports(project, server))
+      .sort((a, b) => b.score(project, server) - a.score(project, server))[0];
     if (!strategy) {
       throw new Error(`No supported deployment strategy for project "${project.framework}" on this server`);
     }
@@ -68,6 +72,7 @@ export class StrategySelector {
       id: params.existingProfile?.id || `deploy-profile-${Date.now()}`,
       serverProfileId: params.input.serverProfileId,
       projectRoot: params.input.projectRoot,
+      sourceKey: params.existingProfile?.sourceKey,
       appName: baseAppName,
       remoteRoot:
         params.existingProfile?.remoteRoot || `/opt/zq-apps/${sanitizeAppName(baseAppName)}`,
@@ -117,6 +122,13 @@ export class StrategySelector {
       params.server.sudoMode === 'unavailable'
     ) {
       missingInfo.push('Python is missing on the server and cannot be installed automatically without sudo');
+    }
+    if (
+      (params.project.framework === 'java-spring-boot' || params.project.framework === 'java-service') &&
+      !params.server.runtimeVersions.java &&
+      params.server.sudoMode === 'unavailable'
+    ) {
+      missingInfo.push('Java runtime is missing on the server and cannot be installed automatically without sudo');
     }
     if (profile.enableHttps && !profile.domain) {
       missingInfo.push('A domain is required to configure HTTPS');
@@ -183,6 +195,13 @@ export class StrategySelector {
       params.server.sudoMode !== 'unavailable'
     ) {
       warnings.push('Python runtime is missing on the server and will be installed automatically');
+    }
+    if (
+      (params.project.framework === 'java-spring-boot' || params.project.framework === 'java-service') &&
+      !params.server.runtimeVersions.java &&
+      params.server.sudoMode !== 'unavailable'
+    ) {
+      warnings.push('Java runtime is missing on the server and will be installed automatically');
     }
 
     const strategy = this.select(params.project, params.server, profile.preferredStrategy);

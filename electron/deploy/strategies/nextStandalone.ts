@@ -1,10 +1,13 @@
-import { DeployPlan, ProjectSpec, ServerSpec } from '../../../src/shared/deployTypes.js';
+import { DeployPlan, DeployStep, ProjectSpec, ServerSpec } from '../../../src/shared/deployTypes.js';
 import { renderProxyNginxConfig } from '../templates/nginx.js';
 import { renderEnvTemplate } from '../templates/env.js';
 import { renderSystemdService } from '../templates/systemd.js';
 import {
   BuildPlanInput,
   DeployStrategy,
+  StrategyBuildContext,
+  StrategyRepairContext,
+  buildArchiveTransferSteps,
   buildEnsureNginxCommand,
   buildEnsureNodeCommand,
   buildEnsureNodePackageManagerCommand,
@@ -20,6 +23,11 @@ export class NextStandaloneStrategy implements DeployStrategy {
 
   supports(project: ProjectSpec, server: ServerSpec): boolean {
     return project.framework === 'nextjs' && canProvideNodeRuntime(server) && server.hasSystemd;
+  }
+
+  score(project: ProjectSpec, server: ServerSpec): number {
+    if (project.framework !== 'nextjs') return 0;
+    return server.hasSystemd ? 85 : 0;
   }
 
   async buildPlan(input: BuildPlanInput): Promise<DeployPlan> {
@@ -43,36 +51,16 @@ export class NextStandaloneStrategy implements DeployStrategy {
       releaseId: ctx.releaseId,
       steps: [
         { kind: 'local_scan', id: 'scan', label: 'Analyze project' },
-        {
-          kind: 'local_pack',
-          id: 'pack',
-          label: 'Pack project',
-          sourceDir: ctx.profile.projectRoot,
-          outFile: ctx.archiveLocalPath,
-        },
+        ...buildArchiveTransferSteps(ctx),
         {
           kind: 'ssh_exec',
-          id: 'prepare',
-          label: 'Prepare release directories',
-          command: `mkdir -p ${shQuote(`${ctx.profile.remoteRoot}/releases`)} ${shQuote(ctx.sharedDir)}`,
+          id: 'prepare-shared',
+          label: 'Prepare shared directory',
+          command: `mkdir -p ${shQuote(ctx.sharedDir)}`,
           sudo: true,
         },
         ...runtimeProvisionSteps,
         ...packageManagerProvisionSteps,
-        {
-          kind: 'sftp_upload',
-          id: 'upload',
-          label: 'Upload release archive',
-          localPath: ctx.archiveLocalPath,
-          remotePath: ctx.archiveRemotePath,
-        },
-        {
-          kind: 'remote_extract',
-          id: 'extract',
-          label: 'Extract release',
-          archivePath: ctx.archiveRemotePath,
-          targetDir: ctx.releaseDir,
-        },
         ...(Object.keys(ctx.profile.envVars).length > 0
           ? [{
               kind: 'remote_write_file' as const,
@@ -88,16 +76,16 @@ export class NextStandaloneStrategy implements DeployStrategy {
           id: 'install',
           label: 'Install dependencies',
           command: install,
-          cwd: ctx.releaseDir,
+          cwd: ctx.projectDir,
         },
         {
           kind: 'ssh_exec',
           id: 'build',
           label: 'Build Next.js app',
           command: withOptionalEnvFile('npm run build', runtimeEnvFilePath),
-          cwd: ctx.releaseDir,
+          cwd: ctx.projectDir,
         },
-        ...migrationSteps,
+        ...migrationSteps.map((step) => ({ ...step, cwd: ctx.projectDir })),
         {
           kind: 'ssh_exec',
           id: 'snapshot-current',
@@ -191,6 +179,48 @@ export class NextStandaloneStrategy implements DeployStrategy {
           sudo: true,
         },
       ],
+    };
+  }
+
+  repairRules(context: StrategyRepairContext): DeployStep[] {
+    const steps: DeployStep[] = [];
+    if (context.failureClass === 'runtime_missing' || context.failureClass === 'runtime_version_mismatch') {
+      const ensureNode = buildEnsureNodeCommand(context.server);
+      if (ensureNode) {
+        steps.push({
+          kind: 'ssh_exec',
+          id: `repair-next-node-${context.attempt}`,
+          label: 'Repair Node.js runtime',
+          command: ensureNode,
+          sudo: true,
+        });
+      }
+    }
+    if (context.failureClass === 'service_boot_failed') {
+      steps.push({
+        kind: 'ssh_exec',
+        id: `repair-next-service-${context.attempt}`,
+        label: 'Restart Next.js service',
+        command: `systemctl daemon-reload && systemctl restart ${shQuote(context.serviceName)}`,
+        sudo: true,
+      });
+    }
+    if (context.failureClass === 'proxy_failed' && context.profile.domain) {
+      steps.push({
+        kind: 'ssh_exec',
+        id: `repair-next-nginx-${context.attempt}`,
+        label: 'Reload Nginx',
+        command: 'nginx -t && systemctl reload nginx',
+        sudo: true,
+      });
+    }
+    return steps;
+  }
+
+  verifyTargets(context: StrategyBuildContext) {
+    return {
+      urls: [context.finalUrl],
+      services: [context.serviceName],
     };
   }
 }

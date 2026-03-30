@@ -1,11 +1,15 @@
 import path from 'path';
-import { DeployPlan, ProjectSpec, ServerSpec } from '../../../src/shared/deployTypes.js';
+import { DeployPlan, DeployStep, ProjectSpec, ServerSpec } from '../../../src/shared/deployTypes.js';
+import { renderEnvTemplate } from '../templates/env.js';
 import { renderStaticNginxConfig } from '../templates/nginx.js';
 import {
   BuildPlanInput,
   DeployStrategy,
-  buildEnsureNginxCommand,
+  StrategyBuildContext,
+  StrategyRepairContext,
+  buildArchiveTransferSteps,
   buildCommand,
+  buildEnsureNginxCommand,
   canProvideNginx,
   installCommand,
   shQuote,
@@ -19,6 +23,11 @@ export class StaticNginxStrategy implements DeployStrategy {
     return (project.framework === 'vite-static' || project.framework === 'react-spa') && canProvideNginx(server);
   }
 
+  score(project: ProjectSpec, server: ServerSpec): number {
+    if (project.framework !== 'vite-static' && project.framework !== 'react-spa') return 0;
+    return server.hasNginx ? 80 : 70;
+  }
+
   async buildPlan(input: BuildPlanInput): Promise<DeployPlan> {
     const ctx = withContext(input);
     const install = installCommand(ctx.project.packageManager);
@@ -27,6 +36,81 @@ export class StaticNginxStrategy implements DeployStrategy {
     const builtOutputDir = path.join(ctx.profile.projectRoot, outputDir);
     const serverName = ctx.profile.domain || '_';
     const runtimeProvisionSteps = buildRuntimeProvisionSteps(ctx.server);
+    const finalRoot = ctx.source?.type === 'github' ? `${ctx.currentDir}/${outputDir}` : ctx.currentDir;
+
+    const sourceSteps =
+      ctx.source?.type === 'github'
+        ? [
+            ...buildArchiveTransferSteps(ctx),
+            ...(Object.keys(ctx.profile.envVars).length > 0
+              ? [{
+                  kind: 'remote_write_file' as const,
+                  id: 'env',
+                  label: 'Write build env file',
+                  path: `${ctx.projectDir}/.env`,
+                  content: renderEnvTemplate(ctx.profile.envVars),
+                }]
+              : []),
+            {
+              kind: 'ssh_exec' as const,
+              id: 'remote-install',
+              label: 'Install server-side dependencies',
+              command: install,
+              cwd: ctx.projectDir,
+            },
+            {
+              kind: 'ssh_exec' as const,
+              id: 'remote-build',
+              label: 'Build production assets',
+              command: build,
+              cwd: ctx.projectDir,
+            },
+          ]
+        : [
+            {
+              kind: 'local_exec' as const,
+              id: 'local-install',
+              label: 'Install local dependencies',
+              command: install,
+              cwd: ctx.profile.projectRoot,
+            },
+            {
+              kind: 'local_exec' as const,
+              id: 'local-build',
+              label: 'Build local production assets',
+              command: build,
+              cwd: ctx.profile.projectRoot,
+              env: ctx.profile.envVars,
+            },
+            {
+              kind: 'local_pack' as const,
+              id: 'pack',
+              label: `Pack ${outputDir} assets`,
+              sourceDir: builtOutputDir,
+              outFile: ctx.archiveLocalPath,
+            },
+            {
+              kind: 'ssh_exec' as const,
+              id: 'prepare',
+              label: 'Prepare release directories',
+              command: `mkdir -p ${shQuote(`${ctx.profile.remoteRoot}/releases`)} ${shQuote(ctx.sharedDir)}`,
+              sudo: true,
+            },
+            {
+              kind: 'sftp_upload' as const,
+              id: 'upload',
+              label: 'Upload release archive',
+              localPath: ctx.archiveLocalPath,
+              remotePath: ctx.archiveRemotePath,
+            },
+            {
+              kind: 'remote_extract' as const,
+              id: 'extract',
+              label: 'Extract release',
+              archivePath: ctx.archiveRemotePath,
+              targetDir: ctx.releaseDir,
+            },
+          ];
 
     return {
       id: `deploy-plan-${Date.now()}`,
@@ -35,50 +119,8 @@ export class StaticNginxStrategy implements DeployStrategy {
       releaseId: ctx.releaseId,
       steps: [
         { kind: 'local_scan', id: 'scan', label: 'Analyze project' },
-        {
-          kind: 'local_exec',
-          id: 'local-install',
-          label: 'Install local dependencies',
-          command: install,
-          cwd: ctx.profile.projectRoot,
-        },
-        {
-          kind: 'local_exec',
-          id: 'local-build',
-          label: 'Build local production assets',
-          command: build,
-          cwd: ctx.profile.projectRoot,
-          env: ctx.profile.envVars,
-        },
-        {
-          kind: 'local_pack',
-          id: 'pack',
-          label: `Pack ${outputDir} assets`,
-          sourceDir: builtOutputDir,
-          outFile: ctx.archiveLocalPath,
-        },
-        {
-          kind: 'ssh_exec',
-          id: 'prepare',
-          label: 'Prepare release directories',
-          command: `mkdir -p ${shQuote(`${ctx.profile.remoteRoot}/releases`)} ${shQuote(ctx.sharedDir)}`,
-          sudo: true,
-        },
+        ...sourceSteps,
         ...runtimeProvisionSteps,
-        {
-          kind: 'sftp_upload',
-          id: 'upload',
-          label: 'Upload release archive',
-          localPath: ctx.archiveLocalPath,
-          remotePath: ctx.archiveRemotePath,
-        },
-        {
-          kind: 'remote_extract',
-          id: 'extract',
-          label: 'Extract release',
-          archivePath: ctx.archiveRemotePath,
-          targetDir: ctx.releaseDir,
-        },
         {
           kind: 'ssh_exec',
           id: 'snapshot-current',
@@ -101,7 +143,7 @@ export class StaticNginxStrategy implements DeployStrategy {
           sudo: true,
           content: renderStaticNginxConfig({
             serverName,
-            root: ctx.currentDir,
+            root: finalRoot,
           }),
         },
         {
@@ -141,6 +183,29 @@ export class StaticNginxStrategy implements DeployStrategy {
           sudo: true,
         },
       ],
+    };
+  }
+
+  repairRules(context: StrategyRepairContext): DeployStep[] {
+    if (context.failureClass === 'proxy_failed' || context.failureClass === 'health_check_failed') {
+      return [
+        {
+          kind: 'ssh_exec',
+          id: `repair-static-nginx-${context.attempt}`,
+          label: 'Reload Nginx',
+          command: 'nginx -t && systemctl reload nginx',
+          sudo: true,
+        },
+      ];
+    }
+
+    return [];
+  }
+
+  verifyTargets(context: StrategyBuildContext) {
+    return {
+      urls: [context.finalUrl],
+      services: [],
     };
   }
 }

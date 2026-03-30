@@ -1,4 +1,4 @@
-import path from 'path';
+﻿import path from 'path';
 import { WebContents } from 'electron';
 import { DeploymentManager } from '../deploy/deploymentManager.js';
 import {
@@ -115,6 +115,7 @@ function toolCallSummary(name: string, args: Record<string, unknown>): string {
     remote_write_file: '写入远程文件',
     remote_upload_file: '上传文件到远程',
     deploy_project: '自动部署项目',
+    resume_deploy_run: '恢复部署运行',
   };
   const label = mapping[name] || name;
   const mainArg = typeof args.command === 'string'
@@ -176,7 +177,7 @@ export class AgentV2Manager {
       const session = this.sessions.get(sessionId)!;
       if (!session) return;
       if (session) {
-        const content = `执行失败：${error?.message || String(error)}`;
+        const content = `鎵ц澶辫触锛?{error?.message || String(error)}`;
         this.historyPush(session, { role: 'assistant', content });
         this.emitAssistantMessage(session, {
           id: `agent-error-${Date.now()}`,
@@ -190,7 +191,7 @@ export class AgentV2Manager {
         this.emitAssistantMessage(session, {
           id: `agent-error-${Date.now()}`,
           role: 'assistant',
-          content: `执行失败：${error?.message || String(error)}`,
+          content: `鎵ц澶辫触锛?{error?.message || String(error)}`,
           timestamp: Date.now(),
           isError: true,
         });
@@ -213,7 +214,7 @@ export class AgentV2Manager {
       const session = this.sessions.get(sessionId)!;
       if (!session) return;
       if (session) {
-        const content = `继续执行失败：${error?.message || String(error)}`;
+        const content = `缁х画鎵ц澶辫触锛?{error?.message || String(error)}`;
         this.historyPush(session, { role: 'assistant', content });
         this.emitAssistantMessage(session, {
           id: `agent-error-${Date.now()}`,
@@ -227,7 +228,7 @@ export class AgentV2Manager {
         this.emitAssistantMessage(session, {
           id: `agent-error-${Date.now()}`,
           role: 'assistant',
-          content: `继续执行失败：${error?.message || String(error)}`,
+          content: `缁х画鎵ц澶辫触锛?{error?.message || String(error)}`,
           timestamp: Date.now(),
           isError: true,
         });
@@ -285,6 +286,7 @@ export class AgentV2Manager {
       ? (!isContinueIntent(currentStoredGoal) && currentStoredGoal ? currentStoredGoal : threadGoal || currentStoredGoal || options.goal)
       : options.goal;
     const startFresh = options.resetPlan && !continuingCurrentGoal;
+    session.resumeRequested = continuingCurrentGoal;
     session.consecutiveFailures = 0;
     session.turnCounter = 0;
 
@@ -366,6 +368,9 @@ export class AgentV2Manager {
       planState: options.restoredRuntime?.planState || createPlanState(options.goal),
       localContext,
       knownProjectPaths: [],
+      activeDeployRunId: options.restoredRuntime?.activeDeployRunId,
+      activeDeploySource: options.restoredRuntime?.activeDeploySource,
+      resumeRequested: false,
     };
     if (options.restoredRuntime?.contextWindow) {
       session.contextWindow = {
@@ -461,19 +466,19 @@ export class AgentV2Manager {
       } catch (error: any) {
         const retryable = error instanceof LLMRequestError
           ? error.retryable
-          : /(429|ServerOverloaded|TooManyRequests|temporarily overloaded|繁忙)/i.test(error?.message || '');
+          : /(429|ServerOverloaded|TooManyRequests|temporarily overloaded|绻佸繖)/i.test(error?.message || '');
         if (!retryable || attempt >= maxAttempts || session.aborted) {
           throw error;
         }
         const waitMs = 1200 * attempt;
         session.planState.scratchpad = appendScratchpad(
           session.planState.scratchpad,
-          `AI 服务繁忙，自动重试第 ${attempt} 次，等待 ${waitMs}ms`,
+          `AI 鏈嶅姟绻佸繖锛岃嚜鍔ㄩ噸璇曠 ${attempt} 娆★紝绛夊緟 ${waitMs}ms`,
         );
         await this.sleep(waitMs, session.abortController?.signal);
       }
     }
-    throw new Error('AI 服务重试失败');
+    throw new Error('AI 鏈嶅姟閲嶈瘯澶辫触');
   }
 
   private sleep(ms: number, signal?: AbortSignal) {
@@ -522,14 +527,23 @@ export class AgentV2Manager {
   private async tryDirectDeployRoute(session: AgentThreadSession, goal: string): Promise<boolean> {
     if (!DEPLOY_INTENT_RE.test(goal)) return false;
 
-    const projectSource = extractDeployProjectPath(goal, session.knownProjectPaths);
-    if (!projectSource) return false;
+    const continueDeploy = Boolean(session.activeDeployRunId) && Boolean(session.resumeRequested);
+    const projectSource = continueDeploy
+      ? session.activeDeploySource || extractDeployProjectPath(goal, session.knownProjectPaths)
+      : extractDeployProjectPath(goal, session.knownProjectPaths);
+    if (!continueDeploy && !projectSource) return false;
 
+    const toolName = continueDeploy ? 'resume_deploy_run' : 'deploy_project';
+    const toolCommand = continueDeploy
+      ? `resume deploy ${session.activeDeployRunId}`
+      : `deploy ${projectSource}`;
     const step: PlanState['plan'][number] = {
       id: session.planState.plan.length + 1,
-      description: `自动部署项目: ${projectSource}`,
+      description: continueDeploy
+        ? `恢复部署运行: ${session.activeDeployRunId}`
+        : `自动部署项目: ${projectSource}`,
       status: 'in_progress',
-      command: `deploy ${projectSource}`,
+      command: toolCommand,
     };
     session.planState.plan.push(step);
     this.emitPlanUpdate(session, 'executing');
@@ -537,7 +551,9 @@ export class AgentV2Manager {
     this.emitAssistantMessage(session, {
       id: `deploy-route-${Date.now()}`,
       role: 'assistant',
-      content: `检测到部署任务，先分析项目类型，再选择最合适的部署路线并自动执行。`,
+      content: continueDeploy
+        ? '继续恢复当前部署运行，沿用之前锁定的部署路线和进度。'
+        : '检测到部署任务，先解析源码源、识别项目类型，再按锁定策略自动部署并自动修复。',
       timestamp: Date.now(),
     });
 
@@ -547,8 +563,8 @@ export class AgentV2Manager {
       content: '',
       timestamp: Date.now(),
       toolCall: {
-        name: 'deploy_project',
-        command: `deploy ${projectSource}`,
+        name: toolName,
+        command: toolCommand,
         status: 'pending',
       },
     });
@@ -561,57 +577,73 @@ export class AgentV2Manager {
           id: directToolCallId,
           type: 'function',
           function: {
-            name: 'deploy_project',
-            arguments: JSON.stringify({ projectRoot: projectSource }),
+            name: toolName,
+            arguments: continueDeploy
+              ? JSON.stringify({ runId: session.activeDeployRunId })
+              : JSON.stringify({ projectRoot: projectSource }),
           },
         },
       ],
     });
 
     try {
-      const result = await this.toolRegistry.execute('deploy_project', { projectRoot: projectSource }, session);
+      const result = continueDeploy
+        ? await this.toolRegistry.execute('resume_deploy_run', { runId: session.activeDeployRunId }, session)
+        : await this.toolRegistry.execute('deploy_project', { projectRoot: projectSource }, session);
       step.status = result.ok ? 'completed' : 'failed';
       step.result = result.ok ? clip(result.content, 240) : undefined;
       step.error = result.ok ? undefined : clip(result.content, 240);
       session.planState.scratchpad = appendScratchpad(session.planState.scratchpad, result.scratchpadNote);
 
+      const summary = result.structured as Record<string, unknown>;
+      if (typeof summary.runId === 'string' && summary.runId) {
+        session.activeDeployRunId = summary.runId;
+      }
+      if (!continueDeploy && projectSource) {
+        session.activeDeploySource = projectSource;
+      }
+      if (result.ok) {
+        session.activeDeployRunId = undefined;
+        session.activeDeploySource = undefined;
+      }
+
       const serialized = serializeValue(result.structured);
-      const toolContent = serialized.length > 1600 ? this.storeArtifact(session, 'deploy_project', serialized) : serialized;
+      const toolContent = serialized.length > 1600 ? this.storeArtifact(session, toolName, serialized) : serialized;
       this.historyPush(session, {
         role: 'tool',
         tool_call_id: directToolCallId,
         content: toolContent,
       });
-      this.emitToolResultMessage(session, 'deploy_project', `deploy ${projectSource}`, result.content, result.ok);
+      this.emitToolResultMessage(session, toolName, toolCommand, result.content, result.ok);
       this.emitPlanUpdate(session, 'executing');
 
       if (result.ok) {
-        const summary = result.structured as Record<string, unknown>;
         const url = typeof summary.url === 'string' && summary.url ? summary.url : session.sshHost;
-        this.historyPush(session, {
-          role: 'assistant',
-          content: `部署完成。访问地址：${url}`,
-        });
+        const attempts = typeof summary.attemptCount === 'number' ? summary.attemptCount : 0;
+        const successText = attempts > 0
+          ? `部署完成，访问地址：${url}。自动修复轮次：${attempts}。`
+          : `部署完成，访问地址：${url}。`;
+        this.historyPush(session, { role: 'assistant', content: successText });
         this.emitAssistantMessage(session, {
           id: `deploy-success-${Date.now()}`,
           role: 'assistant',
-          content: `部署完成。\n访问地址：${url}`,
+          content: successText,
           timestamp: Date.now(),
         });
-        return true;
+      } else {
+        const failureText = continueDeploy
+          ? '部署恢复仍未完成，当前运行状态已保留，可以继续发送“继续”恢复同一个部署 run。'
+          : '部署主线未完成，当前运行状态已保留，可以继续发送“继续”恢复同一个部署 run。';
+        this.historyPush(session, { role: 'assistant', content: failureText });
+        this.emitAssistantMessage(session, {
+          id: `deploy-failed-${Date.now()}`,
+          role: 'assistant',
+          content: failureText,
+          timestamp: Date.now(),
+          isError: true,
+        });
       }
-
-      this.emitAssistantMessage(session, {
-        id: `deploy-fallback-${Date.now()}`,
-        role: 'assistant',
-        content: '部署主线没有一次完成，我继续自动诊断并修复。',
-        timestamp: Date.now(),
-      });
-      this.historyPush(session, {
-        role: 'user',
-        content: `${goal}\nThe deterministic deployment path failed once. Continue automatic diagnosis and repair.`,
-      });
-      return false;
+      return true;
     } catch (error: any) {
       step.status = 'failed';
       step.error = clip(error?.message || String(error), 240);
@@ -619,28 +651,20 @@ export class AgentV2Manager {
         session.planState.scratchpad,
         `部署主线失败: ${error?.message || String(error)}`,
       );
-      this.emitToolResultMessage(
-        session,
-        'deploy_project',
-        `deploy ${projectSource}`,
-        error?.message || String(error),
-        false,
-      );
+      this.emitToolResultMessage(session, toolName, toolCommand, error?.message || String(error), false);
       this.emitAssistantMessage(session, {
-        id: `deploy-fallback-${Date.now()}`,
+        id: `deploy-failed-${Date.now()}`,
         role: 'assistant',
-        content: '部署主线失败，我继续自动诊断并修复。',
+        content: '部署运行失败，当前上下文已保留，可以继续发送“继续”恢复同一个部署 run。',
         timestamp: Date.now(),
-      });
-      this.historyPush(session, {
-        role: 'user',
-        content: `${goal}\nThe deterministic deployment path failed. Continue automatic diagnosis and repair.`,
+        isError: true,
       });
       this.emitPlanUpdate(session, 'executing');
-      return false;
+      return true;
+    } finally {
+      session.resumeRequested = false;
     }
   }
-
   private estimateContextLimit(profile: LLMProfile): number {
     const model = `${profile.provider}:${profile.model}`.toLowerCase();
     if (/(gpt-5|gpt-4\.1|claude|deepseek|qwen|gemini)/.test(model)) {
@@ -800,7 +824,7 @@ export class AgentV2Manager {
       step.status = 'failed';
       step.command = description;
       step.error = clip(errorMessage, 240);
-      session.planState.scratchpad = appendScratchpad(session.planState.scratchpad, `失败: ${description} -> ${errorMessage}`);
+      session.planState.scratchpad = appendScratchpad(session.planState.scratchpad, `澶辫触: ${description} -> ${errorMessage}`);
       this.historyPush(session, {
         role: 'tool',
         tool_call_id: toolCall.id,
@@ -810,7 +834,7 @@ export class AgentV2Manager {
       this.emitPlanUpdate(session, 'executing');
 
       if (session.consecutiveFailures >= 4) {
-        const content = `连续失败次数过多，已停止自动执行。最后错误：${errorMessage}`;
+        const content = `杩炵画澶辫触娆℃暟杩囧锛屽凡鍋滄鑷姩鎵ц銆傛渶鍚庨敊璇細${errorMessage}`;
         this.historyPush(session, { role: 'assistant', content });
         this.emitAssistantMessage(session, {
           id: `agent-failed-${Date.now()}`,
@@ -871,6 +895,8 @@ export class AgentV2Manager {
         contextWindow: session.contextWindow,
         compressedMemory: session.compressedMemory,
         knownProjectPaths: session.knownProjectPaths,
+        activeDeployRunId: session.activeDeployRunId,
+        activeDeploySource: session.activeDeploySource,
       });
     }
   }
@@ -903,3 +929,5 @@ export class AgentV2Manager {
     this.emitAssistantMessage(session, message);
   }
 }
+
+

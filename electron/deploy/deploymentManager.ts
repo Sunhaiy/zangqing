@@ -7,10 +7,12 @@ import Store from 'electron-store';
 import {
   CreateDeployDraftInput,
   DeployDraft,
+  DeployFailureEntry,
   DeployLogEntry,
   DeployRun,
   DeployStep,
   DeployStepRuntime,
+  FailureClass,
   StartDeployInput,
 } from '../../src/shared/deployTypes.js';
 import { SSHManager } from '../ssh/sshManager.js';
@@ -21,9 +23,12 @@ import { DeployStore } from './deployStore.js';
 import { Verifier } from './verifier.js';
 import { RollbackRunner } from './rollback.js';
 import { createArchive } from './packager/archivePackager.js';
-import { shQuote } from './strategies/base.js';
+import { buildEnsureGitCommand, DeployStrategy, sanitizeAppName, shQuote, toPosixPath } from './strategies/base.js';
+import { ResolvedDeploySource, SourceResolver } from './sourceResolver.js';
 
 const execFile = promisify(execFileCallback);
+const DEFAULT_HEALTH_CHECK_PATHS = ['/health', '/api/health', '/healthz', '/api/ping', '/ping'];
+const MAX_REPAIR_ATTEMPTS = 5;
 
 interface ActiveRunSession {
   run: DeployRun;
@@ -43,8 +48,6 @@ function pathNeedsSudo(targetPath: string): boolean {
   return ['/opt/', '/etc/', '/usr/', '/var/'].some((prefix) => targetPath.startsWith(prefix));
 }
 
-const DEFAULT_HEALTH_CHECK_PATHS = ['/health', '/api/health', '/healthz', '/api/ping', '/ping'];
-
 function stepToRuntime(step: DeployStep): DeployStepRuntime {
   return { ...step, status: 'pending' };
 }
@@ -56,6 +59,7 @@ export class DeploymentManager {
   private deployStore: DeployStore;
   private verifier: Verifier;
   private rollbackRunner = new RollbackRunner();
+  private sourceResolver = new SourceResolver();
   private activeRuns = new Map<string, ActiveRunSession>();
 
   constructor(private sshMgr: SSHManager, store: Store) {
@@ -73,25 +77,8 @@ export class DeploymentManager {
   }
 
   async createDraft(sessionId: string, input: CreateDeployDraftInput): Promise<DeployDraft> {
-    const project = await this.scanner.scan(input.projectRoot);
-    const normalizedInput = {
-      ...input,
-      projectRoot: project.rootPath,
-    };
-    const connection = this.sshMgr.getConnectionConfig(sessionId);
-    const server = await this.inspector.inspect(sessionId, connection?.host || 'server');
-    const existingProfile = this.deployStore.findProfile(
-      normalizedInput.serverProfileId,
-      normalizedInput.projectRoot,
-    );
-    const draft = this.selector.buildDraft({
-      input: normalizedInput,
-      project,
-      server,
-      existingProfile,
-    });
-    this.deployStore.saveProfile(draft.profile);
-    return draft;
+    const resolvedSource = await this.resolveSource(input);
+    return this.createDraftFromResolved(sessionId, input, resolvedSource);
   }
 
   listRuns(serverProfileId?: string) {
@@ -115,7 +102,10 @@ export class DeploymentManager {
   }
 
   start(sessionId: string, webContents: WebContents, input: StartDeployInput): void {
-    this.runBlocking(sessionId, webContents, input).catch((error) => {
+    const task = input.resumeRunId
+      ? this.resumeBlocking(sessionId, webContents, input.resumeRunId)
+      : this.runBlocking(sessionId, webContents, input);
+    task.catch((error) => {
       console.error('[DeploymentManager] start error:', error);
     });
   }
@@ -125,6 +115,7 @@ export class DeploymentManager {
     webContents: WebContents,
     input: StartDeployInput,
   ): Promise<DeployRun> {
+    const normalizedSource = this.sourceResolver.normalize(input);
     const runId = `deploy-run-${Date.now()}`;
     const initialRun: DeployRun = {
       id: runId,
@@ -134,13 +125,22 @@ export class DeploymentManager {
       createdAt: now(),
       updatedAt: now(),
       status: 'running',
-      phase: 'analyzing_project',
+      phase: 'resolving_source',
+      source: normalizedSource,
+      attemptCount: 0,
+      failureHistory: [],
       steps: [],
       logs: [],
-      outputs: {},
+      outputs: {
+        sourceUrl: normalizedSource.type === 'github' ? normalizedSource.url : undefined,
+      },
       warnings: [],
       missingInfo: [],
       rollbackStatus: 'not_needed',
+      resumeState: {
+        nextStepIndex: 0,
+        completedStepIds: [],
+      },
     };
 
     this.activeRuns.set(sessionId, { run: initialRun, webContents, cancelled: false });
@@ -148,93 +148,529 @@ export class DeploymentManager {
     this.pushRun(sessionId, webContents, initialRun);
 
     try {
-      const draft = await this.createDraft(sessionId, input);
+      const resolvedSource = await this.resolveSource(input);
       const active = this.requireActive(sessionId);
-      active.run.projectSpec = draft.projectSpec;
-      active.run.serverSpec = draft.serverSpec;
-      active.run.profile = draft.profile;
-      active.run.projectRoot = draft.profile.projectRoot;
-      active.run.warnings = draft.warnings;
-      active.run.missingInfo = draft.missingInfo;
-      active.run.updatedAt = now();
-      this.log(sessionId, webContents, {
-        level: 'info',
-        message: `Strategy selected: ${draft.strategyId}`,
-      });
+      active.run.source = resolvedSource.source;
+      active.run.projectRoot = resolvedSource.projectRoot;
+      active.run.resolvedCheckout = resolvedSource.resolvedCheckout;
+      active.run.phase = 'detecting_project';
+      this.updateRun(sessionId, webContents);
 
+      const draft = await this.createDraftFromResolved(sessionId, input, resolvedSource);
+      const strategy = this.selector.select(draft.projectSpec, draft.serverSpec, draft.strategyId);
       const connection = this.sshMgr.getConnectionConfig(sessionId);
-      const strategy = this.selector.select(
-        draft.projectSpec,
-        draft.serverSpec,
-        draft.strategyId,
-      );
       const plan = await strategy.buildPlan({
         profile: draft.profile,
         project: draft.projectSpec,
         server: draft.serverSpec,
         connectionHost: connection?.host || draft.serverSpec.host,
+        source: draft.source,
+        resolvedCheckout: draft.resolvedCheckout,
       });
 
       active.run.phase = 'planning';
+      active.run.projectSpec = draft.projectSpec;
+      active.run.serverSpec = draft.serverSpec;
+      active.run.profile = draft.profile;
+      active.run.projectRoot = resolvedSource.projectRoot;
+      active.run.warnings = draft.warnings;
+      active.run.missingInfo = draft.missingInfo;
+      active.run.chosenStrategy = strategy.id;
       active.run.plan = plan;
       active.run.outputs.releaseId = plan.releaseId;
       active.run.outputs.strategyId = plan.strategyId;
       active.run.outputs.remoteRoot = draft.profile.remoteRoot;
       active.run.steps = plan.steps.map(stepToRuntime);
-      active.run.updatedAt = now();
+      active.run.resumeState = {
+        nextStepIndex: 0,
+        nextStepId: active.run.steps[0]?.id,
+        completedStepIds: [],
+        lockedStrategyId: strategy.id,
+        sourceKey: resolvedSource.sourceKey,
+      };
+      this.log(sessionId, webContents, { level: 'info', message: `Strategy locked: ${strategy.id}` });
       this.updateRun(sessionId, webContents);
 
-      for (const step of active.run.steps) {
-        this.throwIfCancelled(sessionId);
-        await this.executeRuntimeStep(sessionId, webContents, step);
-      }
+      await this.executePlanWithRepairs(sessionId, webContents, strategy, 0);
 
       active.run.phase = 'completed';
       active.run.status = 'completed';
-      active.run.updatedAt = now();
+      active.run.currentStep = undefined;
+      active.run.error = undefined;
       this.updateRun(sessionId, webContents);
       this.finish(sessionId, webContents, active.run);
       return active.run;
     } catch (error: any) {
-      const active = this.requireActive(sessionId);
-      active.run.error = error?.message || String(error);
-      active.run.status = active.cancelled ? 'cancelled' : 'failed';
-      active.run.phase = active.cancelled ? 'cancelled' : 'failed';
-      active.run.updatedAt = now();
-      this.log(sessionId, webContents, {
-        level: 'error',
-        message: active.run.error || 'Deployment failed',
-      });
-
-      if (!active.cancelled && active.run.plan?.rollbackSteps?.length) {
-        active.run.rollbackStatus = 'running';
-        active.run.phase = 'rolling_back';
-        active.run.updatedAt = now();
-        this.updateRun(sessionId, webContents);
-        try {
-          await this.rollbackRunner.run(active.run.plan.rollbackSteps, async (step) => {
-            await this.executeStep(sessionId, webContents, step);
-          });
-          active.run.rollbackStatus = 'completed';
-          this.log(sessionId, webContents, {
-            level: 'success',
-            message: 'Rollback completed',
-          });
-        } catch (rollbackError: any) {
-          active.run.rollbackStatus = 'failed';
-          this.log(sessionId, webContents, {
-            level: 'error',
-            message: `Rollback failed: ${rollbackError?.message || rollbackError}`,
-          });
-        }
-      }
-
-      this.updateRun(sessionId, webContents);
-      this.finish(sessionId, webContents, active.run);
-      return active.run;
+      return await this.failRun(sessionId, webContents, error);
     } finally {
       this.activeRuns.delete(sessionId);
     }
+  }
+
+  async resumeBlocking(sessionId: string, webContents: WebContents, runId: string): Promise<DeployRun> {
+    const storedRun = this.deployStore.getRun(runId);
+    if (!storedRun) {
+      throw new Error(`Deploy run not found: ${runId}`);
+    }
+    if (storedRun.status === 'completed' || storedRun.status === 'cancelled') {
+      return storedRun;
+    }
+
+    const activeRun: DeployRun = {
+      ...storedRun,
+      status: 'running',
+      phase: storedRun.attemptCount > 0 ? 'repairing' : 'executing',
+      updatedAt: now(),
+    };
+
+    this.activeRuns.set(sessionId, { run: activeRun, webContents, cancelled: false });
+    this.deployStore.saveRun(activeRun);
+    this.pushRun(sessionId, webContents, activeRun);
+
+    try {
+      if (activeRun.source) {
+        const resolvedSource = await this.resolveSource({
+          projectRoot: activeRun.projectRoot,
+          source: activeRun.source,
+        });
+        activeRun.projectRoot = resolvedSource.projectRoot;
+        activeRun.resolvedCheckout = resolvedSource.resolvedCheckout;
+        if (activeRun.profile) activeRun.profile.projectRoot = resolvedSource.projectRoot;
+      }
+
+      if (!activeRun.projectSpec || !activeRun.serverSpec || !activeRun.profile || !activeRun.plan) {
+        throw new Error('Deploy run cannot be resumed because its saved context is incomplete');
+      }
+
+      const strategy = this.selector.select(
+        activeRun.projectSpec,
+        activeRun.serverSpec,
+        activeRun.chosenStrategy || activeRun.plan.strategyId,
+      );
+      const startIndex = this.findResumeIndex(activeRun);
+      await this.executePlanWithRepairs(sessionId, webContents, strategy, startIndex);
+
+      activeRun.phase = 'completed';
+      activeRun.status = 'completed';
+      activeRun.currentStep = undefined;
+      activeRun.error = undefined;
+      this.updateRun(sessionId, webContents);
+      this.finish(sessionId, webContents, activeRun);
+      return activeRun;
+    } catch (error: any) {
+      return await this.failRun(sessionId, webContents, error);
+    } finally {
+      this.activeRuns.delete(sessionId);
+    }
+  }
+
+  private async resolveSource(input: { projectRoot: string; source?: StartDeployInput['source'] }): Promise<ResolvedDeploySource> {
+    return this.sourceResolver.resolve(input);
+  }
+
+  private async createDraftFromResolved(
+    sessionId: string,
+    input: CreateDeployDraftInput,
+    resolvedSource: ResolvedDeploySource,
+  ): Promise<DeployDraft> {
+    const connection = this.sshMgr.getConnectionConfig(sessionId);
+    const server = await this.inspector.inspect(sessionId, connection?.host || 'server');
+    const project = await this.scanResolvedSource(sessionId, resolvedSource, server);
+    const normalizedInput = {
+      ...input,
+      projectRoot: resolvedSource.projectRoot,
+    };
+    const existingProfile = this.deployStore.findProfile(
+      normalizedInput.serverProfileId,
+      resolvedSource.sourceKey,
+    );
+    const draft = this.selector.buildDraft({
+      input: normalizedInput,
+      project,
+      server,
+      existingProfile,
+    });
+    draft.profile.projectRoot = resolvedSource.projectRoot;
+    draft.profile.sourceKey = resolvedSource.sourceKey;
+    this.deployStore.saveProfile(draft.profile);
+
+    return {
+      ...draft,
+      source: resolvedSource.source,
+      resolvedCheckout: resolvedSource.resolvedCheckout,
+    };
+  }
+
+  private async scanResolvedSource(
+    sessionId: string,
+    resolvedSource: ResolvedDeploySource,
+    server: Awaited<ReturnType<ServerInspector['inspect']>>,
+  ) {
+    if (resolvedSource.source.type === 'local') {
+      return this.scanner.scan(resolvedSource.projectRoot);
+    }
+    return this.scanGitHubSourceOnRemote(sessionId, resolvedSource, server);
+  }
+
+  private buildRemoteAnalysisRoot(sourceKey: string) {
+    const digest = Buffer.from(sourceKey).toString('base64').replace(/[^a-z0-9]/gi, '').slice(0, 24).toLowerCase();
+    return `/tmp/zangqing-source-cache/${digest}`;
+  }
+
+  private async ensureRemoteGitAnalysisCheckout(
+    sessionId: string,
+    resolvedSource: ResolvedDeploySource,
+    server: Awaited<ReturnType<ServerInspector['inspect']>>,
+  ) {
+    const checkout = resolvedSource.resolvedCheckout;
+    if (!checkout || resolvedSource.source.type !== 'github') {
+      throw new Error('Remote analysis checkout requires a GitHub source');
+    }
+
+    const analysisRoot = this.buildRemoteAnalysisRoot(resolvedSource.sourceKey);
+    const ensureGit = buildEnsureGitCommand(server);
+    const cloneCommand =
+      checkout.ref && checkout.ref !== 'HEAD'
+        ? `git clone --depth 1 --branch ${shQuote(checkout.ref)} ${shQuote(checkout.repoUrl)} ${shQuote(analysisRoot)}`
+        : `git clone --depth 1 ${shQuote(checkout.repoUrl)} ${shQuote(analysisRoot)}`;
+
+    const command = [
+      `mkdir -p ${shQuote(path.posix.dirname(analysisRoot))}`,
+      ...(ensureGit ? [ensureGit] : []),
+      `rm -rf ${shQuote(analysisRoot)}`,
+      cloneCommand,
+      `git -C ${shQuote(analysisRoot)} rev-parse HEAD`,
+    ].join(' && ');
+    const active = this.requireActive(sessionId);
+    const shellScript = [
+      'export PAGER=cat SYSTEMD_PAGER=cat GIT_PAGER=cat TERM=dumb',
+      command,
+    ].join('; ');
+    const finalCommand = pathNeedsSudo(analysisRoot)
+      ? this.wrapSudo(sessionId, shellScript, active.run.serverSpec?.sudoMode || server.sudoMode)
+      : `sh -lc ${shQuote(shellScript)}`;
+    const result = await this.sshMgr.exec(sessionId, finalCommand, 240000);
+    const commit = result.stdout.trim().split(/\r?\n/).pop()?.trim();
+    checkout.analysisRemotePath = analysisRoot;
+    if (commit) {
+      checkout.commit = commit;
+    }
+    const projectDir =
+      resolvedSource.source.subdir
+        ? `${analysisRoot}/${toPosixPath(resolvedSource.source.subdir)}`
+        : analysisRoot;
+    return {
+      analysisRoot,
+      projectDir,
+      commit,
+    };
+  }
+
+  private async readRemoteFileSafe(sessionId: string, remotePath: string) {
+    try {
+      return await this.sshMgr.readFile(sessionId, remotePath);
+    } catch {
+      return null;
+    }
+  }
+
+  private async remoteDirectoryExists(sessionId: string, remotePath: string) {
+    try {
+      const result = await this.sshMgr.exec(
+        sessionId,
+        `sh -lc ${shQuote(`test -d ${shQuote(remotePath)} && printf "yes" || printf "no"`)}`,
+        20000,
+      );
+      return result.stdout.trim() === 'yes';
+    } catch {
+      return false;
+    }
+  }
+
+  private async scanGitHubSourceOnRemote(
+    sessionId: string,
+    resolvedSource: ResolvedDeploySource,
+    server: Awaited<ReturnType<ServerInspector['inspect']>>,
+  ) {
+    const checkout = await this.ensureRemoteGitAnalysisCheckout(sessionId, resolvedSource, server);
+    const rootEntries = await this.sshMgr.listFiles(sessionId, checkout.projectDir);
+    const rootFiles = rootEntries.map((entry) => entry.name);
+    const readmeFile = rootFiles.find((name) => /^readme(?:\.[^.]+)?$/i.test(name));
+    const envFiles = rootFiles.filter((name) => name.startsWith('.env'));
+    const envContents = await Promise.all(
+      envFiles.map(async (file) => ({
+        file,
+        content: (await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/${file}`)) || '',
+      })),
+    );
+
+    const persistentPaths = (
+      await Promise.all(
+        [
+          'uploads',
+          'upload',
+          'storage',
+          'data',
+          'tmp',
+          'logs',
+          'public/uploads',
+          'public/storage',
+        ].map(async (relativePath) => (
+          (await this.remoteDirectoryExists(sessionId, `${checkout.projectDir}/${relativePath}`))
+            ? relativePath
+            : null
+        )),
+      )
+    ).filter((item): item is string => Boolean(item));
+
+    const project = await this.scanner.scanSnapshot({
+      rootPath: resolvedSource.projectRoot,
+      rootFiles,
+      packageJson: await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/package.json`),
+      dockerfile: await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/Dockerfile`),
+      dockerCompose:
+        (await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/docker-compose.yml`)) ||
+        (await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/compose.yml`)),
+      requirements: await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/requirements.txt`),
+      pyproject: await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/pyproject.toml`),
+      pomXml: await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/pom.xml`),
+      gradleFile:
+        (await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/build.gradle`)) ||
+        (await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/build.gradle.kts`)),
+      nvmrc: await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/.nvmrc`),
+      nodeVersionFile: await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/.node-version`),
+      runtimeTxt: await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/runtime.txt`),
+      pythonVersionFile: await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/.python-version`),
+      readmePath: readmeFile,
+      readmeContent: readmeFile
+        ? await this.readRemoteFileSafe(sessionId, `${checkout.projectDir}/${readmeFile}`)
+        : null,
+      envContents,
+      persistentPaths,
+    });
+
+    return project;
+  }
+
+  private findResumeIndex(run: DeployRun) {
+    if (typeof run.resumeState?.nextStepIndex === 'number') {
+      return Math.max(0, Math.min(run.resumeState.nextStepIndex, run.steps.length));
+    }
+    const firstPending = run.steps.findIndex((step) => step.status !== 'completed');
+    return firstPending === -1 ? run.steps.length : firstPending;
+  }
+
+  private async executePlanWithRepairs(
+    sessionId: string,
+    webContents: WebContents,
+    strategy: DeployStrategy,
+    startIndex: number,
+  ) {
+    const active = this.requireActive(sessionId);
+
+    for (let index = startIndex; index < active.run.steps.length; ) {
+      this.throwIfCancelled(sessionId);
+      const step = active.run.steps[index];
+      active.run.currentStep = { index, id: step.id, label: step.label };
+      active.run.resumeState = {
+        ...(active.run.resumeState || { completedStepIds: [] }),
+        nextStepIndex: index,
+        nextStepId: step.id,
+        lockedStrategyId: strategy.id,
+      };
+      this.updateRun(sessionId, webContents);
+
+      try {
+        await this.executeRuntimeStep(sessionId, webContents, step);
+        active.run.resumeState = {
+          ...(active.run.resumeState || { completedStepIds: [] }),
+          nextStepIndex: index + 1,
+          nextStepId: active.run.steps[index + 1]?.id,
+          completedStepIds: Array.from(
+            new Set([...(active.run.resumeState?.completedStepIds || []), step.id]),
+          ),
+          lockedStrategyId: strategy.id,
+        };
+        index += 1;
+        continue;
+      } catch (error: any) {
+        const failureClass = this.classifyFailure(step, error);
+        const repairAttempt = active.run.attemptCount + 1;
+        const failureEntry: DeployFailureEntry = {
+          attempt: repairAttempt,
+          failureClass,
+          stepId: step.id,
+          message: error?.message || String(error),
+          timestamp: now(),
+        };
+        active.run.failureHistory = [...active.run.failureHistory, failureEntry].slice(-20);
+        active.run.attemptCount = repairAttempt;
+        active.run.phase = 'repairing';
+        active.run.error = error?.message || String(error);
+        this.log(sessionId, webContents, {
+          level: 'warn',
+          message: `Repair attempt ${repairAttempt}/${MAX_REPAIR_ATTEMPTS}: ${failureClass}`,
+          stepId: step.id,
+        });
+        this.updateRun(sessionId, webContents);
+
+        if (repairAttempt > MAX_REPAIR_ATTEMPTS) {
+          throw error;
+        }
+
+        const repairSteps = strategy.repairRules({
+          profile: active.run.profile!,
+          project: active.run.projectSpec!,
+          server: active.run.serverSpec!,
+          connectionHost: active.run.serverSpec?.host || active.run.outputs.url || '',
+          releaseId: active.run.plan!.releaseId,
+          releaseDir: this.findReleaseDir(active.run),
+          currentDir: `${active.run.profile!.remoteRoot}/current`,
+          sharedDir: `${active.run.profile!.remoteRoot}/shared`,
+          archiveLocalPath: this.findArchiveLocalPath(active.run),
+          archiveRemotePath: this.findArchiveRemotePath(active.run),
+          serviceName: `${sanitizeAppName(active.run.profile!.appName)}.service`,
+          nginxConfigPath: `/etc/nginx/conf.d/${sanitizeAppName(active.run.profile!.appName)}.conf`,
+          finalUrl:
+            active.run.outputs.healthCheckUrl ||
+            active.run.outputs.url ||
+            `http://${active.run.serverSpec?.host}`,
+          source: active.run.source,
+          resolvedCheckout: active.run.resolvedCheckout,
+          projectDir:
+            active.run.source?.type === 'github' && active.run.source.subdir
+              ? `${this.findReleaseDir(active.run)}/${toPosixPath(active.run.source.subdir)}`
+              : this.findReleaseDir(active.run),
+          run: active.run,
+          plan: active.run.plan!,
+          failedStep: step,
+          failureClass,
+          attempt: repairAttempt,
+        });
+
+        if (repairSteps.length > 0) {
+          for (const repairStep of repairSteps) {
+            this.throwIfCancelled(sessionId);
+            const result = await this.executeStep(sessionId, webContents, repairStep);
+            this.log(sessionId, webContents, {
+              level: 'info',
+              message: `${repairStep.label}: ${result}`,
+              stepId: step.id,
+            });
+          }
+          failureEntry.repairSummary = repairSteps.map((item) => item.label).join(', ');
+        } else {
+          failureEntry.repairSummary = 'No deterministic repair action matched; retrying current step';
+        }
+
+        step.status = 'pending';
+        delete step.error;
+        delete step.result;
+        delete step.startedAt;
+        delete step.finishedAt;
+        active.run.phase = 'executing';
+        this.updateRun(sessionId, webContents);
+      }
+    }
+  }
+
+  private classifyFailure(step: DeployStepRuntime, error: Error): FailureClass {
+    const message = `${error.message}\n${step.id}\n${step.label}`.toLowerCase();
+    if (/failed to clone|invalid github|checkout|fetch head|subdirectory not found/.test(message)) {
+      return 'source_checkout_failed';
+    }
+    if (/serveroverloaded|toomanyrequests|429/.test(message)) {
+      return 'llm_overloaded';
+    }
+    if (step.kind === 'http_verify') {
+      return 'health_check_failed';
+    }
+    if (/address already in use|eaddrinuse|port is already allocated|bind: address already in use/.test(message)) {
+      return 'port_conflict';
+    }
+    if (/docker compose|docker-compose.*command not found|'compose' is not a docker command/.test(message)) {
+      return 'compose_variant_mismatch';
+    }
+    if (/unsupported engine|requires node|requires python|requires java|version mismatch/.test(message)) {
+      return 'runtime_version_mismatch';
+    }
+    if (/command not found|node: not found|python: not found|python3: not found|java: command not found|docker: command not found/.test(message)) {
+      return 'runtime_missing';
+    }
+    if (step.id.includes('docker-build') || /docker build/.test(message)) {
+      return 'docker_build_failed';
+    }
+    if (step.id.includes('docker-run') || step.id.includes('compose-up')) {
+      return 'docker_run_failed';
+    }
+    if (/missing env|environment variable|env var|dotenv|database_url|redis_url|keyerror/.test(message)) {
+      return 'env_missing';
+    }
+    if (/connection refused|ecconnrefused|could not connect|postgres|mysql|redis|mongodb|kafka/.test(message)) {
+      return 'dependency_service_missing';
+    }
+    if (/nginx/.test(message)) {
+      return 'proxy_failed';
+    }
+    if (step.kind === 'service_verify' || /systemctl|service .* is /.test(message)) {
+      return 'service_boot_failed';
+    }
+    if (step.id.includes('build') || step.id.includes('install') || /build failed|compilation|npm err|gradle|maven/.test(message)) {
+      return 'build_failed';
+    }
+    return 'unknown';
+  }
+
+  private findReleaseDir(run: DeployRun) {
+    const releaseId = run.outputs.releaseId || run.plan?.releaseId || 'current';
+    return `${run.profile?.remoteRoot || '/opt/zq-apps/app'}/releases/${releaseId}`;
+  }
+
+  private findArchiveLocalPath(run: DeployRun) {
+    const archiveName = `${run.profile?.appName || 'app'}-${run.outputs.releaseId || run.plan?.releaseId || 'current'}.tar.gz`;
+    if (run.source?.type === 'github' || /^https?:\/\//i.test(run.projectRoot)) {
+      return path.join(process.cwd(), '.zangqing', 'tmp', archiveName);
+    }
+    return path.join(run.projectRoot, '.zangqing', archiveName);
+  }
+
+  private findArchiveRemotePath(run: DeployRun) {
+    const archiveName = `${run.profile?.appName || 'app'}-${run.outputs.releaseId || run.plan?.releaseId || 'current'}.tar.gz`;
+    return `/tmp/${archiveName}`;
+  }
+
+  private async failRun(sessionId: string, webContents: WebContents, error: any): Promise<DeployRun> {
+    const active = this.requireActive(sessionId);
+    active.run.error = error?.message || String(error);
+    active.run.status = active.cancelled ? 'cancelled' : 'failed';
+    active.run.phase = active.cancelled ? 'cancelled' : 'failed';
+    this.log(sessionId, webContents, {
+      level: 'error',
+      message: active.run.error || 'Deployment failed',
+    });
+
+    if (!active.cancelled && active.run.plan?.rollbackSteps?.length) {
+      active.run.rollbackStatus = 'running';
+      active.run.phase = 'rolling_back';
+      this.updateRun(sessionId, webContents);
+      try {
+        await this.rollbackRunner.run(active.run.plan.rollbackSteps, async (step) => {
+          await this.executeStep(sessionId, webContents, step);
+        });
+        active.run.rollbackStatus = 'completed';
+        this.log(sessionId, webContents, { level: 'success', message: 'Rollback completed' });
+      } catch (rollbackError: any) {
+        active.run.rollbackStatus = 'failed';
+        this.log(sessionId, webContents, {
+          level: 'error',
+          message: `Rollback failed: ${rollbackError?.message || rollbackError}`,
+        });
+      }
+    }
+
+    this.updateRun(sessionId, webContents);
+    this.finish(sessionId, webContents, active.run);
+    return active.run;
   }
 
   private requireActive(sessionId: string): ActiveRunSession {
@@ -313,9 +749,7 @@ export class DeploymentManager {
         result = await this.executeStep(sessionId, webContents, step);
       } catch (error: any) {
         const recovered = await this.tryRecoverStep(sessionId, webContents, step, error);
-        if (!recovered) {
-          throw error;
-        }
+        if (!recovered) throw error;
         this.log(sessionId, webContents, {
           level: 'warn',
           message: recovered,
@@ -358,9 +792,7 @@ export class DeploymentManager {
       return `Auto-restarted ${step.serviceName} after verification failure`;
     }
 
-    if (step.kind !== 'http_verify') {
-      return null;
-    }
+    if (step.kind !== 'http_verify') return null;
 
     const active = this.requireActive(sessionId);
     const project = active.run.projectSpec;
@@ -375,11 +807,7 @@ export class DeploymentManager {
 
     const candidateUrls = Array.from(
       new Set(
-        [
-          step.url,
-          ...(project.healthCheckCandidates || []),
-          ...DEFAULT_HEALTH_CHECK_PATHS,
-        ].map((value) => {
+        [step.url, ...(project.healthCheckCandidates || []), ...DEFAULT_HEALTH_CHECK_PATHS].map((value) => {
           if (/^https?:\/\//i.test(value)) return value;
           const normalizedPath = value.startsWith('/') ? value : `/${value}`;
           return new URL(normalizedPath, `${currentUrl.protocol}//${currentUrl.host}`).toString();
@@ -391,9 +819,7 @@ export class DeploymentManager {
       candidateUrls,
       step.expectedStatus || 200,
     );
-    if (!recovered || recovered.url === step.url) {
-      return null;
-    }
+    if (!recovered || recovered.url === step.url) return null;
 
     step.url = recovered.url;
     active.run.outputs.healthCheckUrl = recovered.url;
@@ -403,12 +829,9 @@ export class DeploymentManager {
       this.deployStore.saveProfile(active.run.profile);
     }
     const outputStep = active.run.steps.find(
-      (item): item is DeployStepRuntime & { kind: 'set_output' } =>
-        item.kind === 'set_output',
+      (item): item is DeployStepRuntime & { kind: 'set_output' } => item.kind === 'set_output',
     );
-    if (outputStep) {
-      outputStep.url = recovered.url;
-    }
+    if (outputStep) outputStep.url = recovered.url;
     this.updateRun(sessionId, webContents);
 
     return `Auto-switched health check to ${recovered.url} after ${error.message}`;
@@ -426,7 +849,7 @@ export class DeploymentManager {
 
     switch (step.kind) {
       case 'local_scan':
-        active.run.phase = 'analyzing_project';
+        active.run.phase = 'detecting_project';
         this.updateRun(sessionId, webContents);
         return `Project ${active.run.projectSpec?.name || 'project'} analyzed`;
 
@@ -444,11 +867,25 @@ export class DeploymentManager {
       case 'local_exec':
         active.run.phase = 'packaging';
         this.updateRun(sessionId, webContents);
-        await this.execLocal(step.command, {
-          cwd: step.cwd,
-          env: step.env,
-        });
+        await this.execLocal(step.command, { cwd: step.cwd, env: step.env });
         return `Executed locally: ${step.command}`;
+
+      case 'remote_git_checkout':
+        active.run.phase = 'executing';
+        this.updateRun(sessionId, webContents);
+        await this.execRemote(
+          sessionId,
+          webContents,
+          [
+            `mkdir -p ${shQuote(path.posix.dirname(step.targetDir))}`,
+            `rm -rf ${shQuote(step.targetDir)}`,
+            step.ref && step.ref !== 'HEAD'
+              ? `git clone --depth 1 --branch ${shQuote(step.ref)} ${shQuote(step.repoUrl)} ${shQuote(step.targetDir)}`
+              : `git clone --depth 1 ${shQuote(step.repoUrl)} ${shQuote(step.targetDir)}`,
+          ].join(' && '),
+          { sudo: pathNeedsSudo(step.targetDir) },
+        );
+        return `Fetched ${step.repoUrl} to ${step.targetDir}`;
 
       case 'sftp_upload':
         active.run.phase = 'uploading';
@@ -465,16 +902,12 @@ export class DeploymentManager {
             needsSudo && server.user && server.user !== 'root'
               ? ` && chown -R ${shQuote(`${server.user}:${server.user}`)} ${shQuote(step.targetDir)}`
               : '';
-        await this.execRemote(
-          sessionId,
-          webContents,
-          `mkdir -p ${shQuote(step.targetDir)} && tar -xzf ${shQuote(step.archivePath)} -C ${shQuote(
-            step.targetDir,
-          )} && rm -f ${shQuote(step.archivePath)}${ownershipFix}`,
-          {
-            sudo: needsSudo,
-          },
-        );
+          await this.execRemote(
+            sessionId,
+            webContents,
+            `mkdir -p ${shQuote(step.targetDir)} && tar -xzf ${shQuote(step.archivePath)} -C ${shQuote(step.targetDir)} && rm -f ${shQuote(step.archivePath)}${ownershipFix}`,
+            { sudo: needsSudo },
+          );
         }
         return `Extracted archive to ${step.targetDir}`;
 
@@ -503,9 +936,7 @@ export class DeploymentManager {
           sessionId,
           webContents,
           `ln -sfn ${shQuote(step.targetDir)} ${shQuote(step.currentLink)}`,
-          {
-            sudo: pathNeedsSudo(step.currentLink),
-          },
+          { sudo: pathNeedsSudo(step.currentLink) },
         );
         return `Current release now points to ${step.targetDir}`;
 
@@ -561,10 +992,7 @@ export class DeploymentManager {
     const result = await this.sshMgr.exec(sessionId, finalCommand, 240000);
     if (!webContents.isDestroyed()) {
       if (result.stdout) {
-        webContents.send('terminal-data', {
-          id: sessionId,
-          data: result.stdout.replace(/\n/g, '\r\n'),
-        });
+        webContents.send('terminal-data', { id: sessionId, data: result.stdout.replace(/\n/g, '\r\n') });
       }
       if (result.stderr) {
         webContents.send('terminal-data', {
@@ -642,11 +1070,7 @@ export class DeploymentManager {
       await this.execRemote(sessionId, webContents, `mkdir -p ${shQuote(dir)}`);
       await this.sshMgr.writeFile(sessionId, targetPath, content);
       if (options?.mode) {
-        await this.execRemote(
-          sessionId,
-          webContents,
-          `chmod ${options.mode} ${shQuote(targetPath)}`,
-        );
+        await this.execRemote(sessionId, webContents, `chmod ${options.mode} ${shQuote(targetPath)}`);
       }
       return;
     }

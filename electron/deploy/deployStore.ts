@@ -12,7 +12,8 @@ export class DeployStore {
     return (
       this.listProfiles().find(
         (profile) =>
-          profile.serverProfileId === serverProfileId && profile.projectRoot === projectRoot,
+          profile.serverProfileId === serverProfileId &&
+          (profile.sourceKey === projectRoot || profile.projectRoot === projectRoot),
       ) || null
     );
   }

@@ -64,44 +64,6 @@ function parseGitHubProjectUrl(rawUrl: string): GitHubDeploySource | null {
   return source;
 }
 
-async function cloneGitHubProject(rawUrl: string) {
-  const source = parseGitHubProjectUrl(rawUrl);
-  if (!source) {
-    throw new Error(`Unsupported GitHub project URL: ${rawUrl}`);
-  }
-
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sshtool-github-'));
-  const cloneArgs = ['clone', '--depth', '1'];
-  if (source.branch) {
-    cloneArgs.push('--branch', source.branch);
-  }
-  cloneArgs.push(source.cloneUrl, tempDir);
-
-  try {
-    await execFile('git', cloneArgs, {
-      timeout: 120000,
-      maxBuffer: 1024 * 1024 * 8,
-      windowsHide: true,
-    });
-  } catch (error: any) {
-    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-    const detail = error?.stderr ? String(error.stderr).trim() : (error?.message || String(error));
-    throw new Error(`Failed to clone GitHub repository: ${detail}`);
-  }
-
-  let projectRoot = tempDir;
-  if (source.subdir) {
-    projectRoot = path.join(tempDir, source.subdir);
-    const stats = await fs.stat(projectRoot).catch(() => null);
-    if (!stats?.isDirectory()) {
-      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-      throw new Error(`GitHub link points to a subdirectory that was not found after clone: ${source.subdir}`);
-    }
-  }
-
-  return { tempDir, projectRoot, source };
-}
-
 function truncate(text: string, maxChars = 4000): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...[truncated]`;
@@ -316,6 +278,20 @@ export function createAgentToolRegistry(
         },
       },
     },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'resume_deploy_run',
+        description: 'Resume an existing deterministic deployment run from its saved checkpoint.',
+        parameters: {
+          type: 'object',
+          properties: {
+            runId: { type: 'string', description: 'Existing deployment run id.' },
+          },
+          required: ['runId'],
+        },
+      },
+    },
   ];
 
   return {
@@ -470,49 +446,61 @@ export function createAgentToolRegistry(
         }
         case 'deploy_project': {
           const projectInput = requireString(args, 'projectRoot');
-          const githubSource = parseGitHubProjectUrl(projectInput);
-          let projectRoot = '';
-          let cleanupDir = '';
-          if (githubSource) {
-            const cloned = await cloneGitHubProject(projectInput);
-            projectRoot = cloned.projectRoot;
-            cleanupDir = cloned.tempDir;
-          } else {
-            projectRoot = normalizeLocalPath(projectInput);
+          if (!parseGitHubProjectUrl(projectInput)) {
+            const projectRoot = normalizeLocalPath(projectInput);
             const stats = await fs.stat(projectRoot).catch(() => null);
             if (!stats?.isDirectory()) {
               throw new Error(`Local project path does not exist: ${projectRoot}`);
             }
           }
           const connection = sshMgr.getConnectionConfig(session.connectionId);
-          try {
-            const run = await deploymentManager.runBlocking(session.connectionId, session.webContents, {
-              sessionId: session.connectionId,
-              serverProfileId: connection?.id || session.connectionId,
-              projectRoot,
-            });
-            const summary = {
-              status: run.status,
-              url: run.outputs.url || run.outputs.healthCheckUrl || '',
-              strategyId: run.outputs.strategyId || '',
-              error: run.error || '',
-              warnings: run.warnings,
-              source: projectInput,
-            };
-            return {
-              ok: run.status === 'completed',
-              displayCommand: `deploy ${projectInput}`,
-              content: stringify(summary),
-              structured: summary,
-              scratchpadNote: run.status === 'completed'
-                ? `Deployment completed: ${projectInput} -> ${summary.url || session.sshHost}`
-                : `Deployment failed: ${projectInput} -> ${summary.error || 'unknown error'}`,
-            };
-          } finally {
-            if (cleanupDir) {
-              await fs.rm(cleanupDir, { recursive: true, force: true }).catch(() => undefined);
-            }
-          }
+          const run = await deploymentManager.runBlocking(session.connectionId, session.webContents, {
+            sessionId: session.connectionId,
+            serverProfileId: connection?.id || session.connectionId,
+            projectRoot: projectInput,
+          });
+          const summary = {
+            runId: run.id,
+            status: run.status,
+            url: run.outputs.url || run.outputs.healthCheckUrl || '',
+            strategyId: run.outputs.strategyId || '',
+            error: run.error || '',
+            warnings: run.warnings,
+            attemptCount: run.attemptCount,
+            failureHistory: run.failureHistory,
+            source: projectInput,
+          };
+          return {
+            ok: run.status === 'completed',
+            displayCommand: `deploy ${projectInput}`,
+            content: stringify(summary),
+            structured: summary,
+            scratchpadNote: run.status === 'completed'
+              ? `Deployment completed: ${projectInput} -> ${summary.url || session.sshHost}`
+              : `Deployment failed: ${projectInput} -> ${summary.error || 'unknown error'}`,
+          };
+        }
+        case 'resume_deploy_run': {
+          const runId = requireString(args, 'runId');
+          const run = await deploymentManager.resumeBlocking(session.connectionId, session.webContents, runId);
+          const summary = {
+            runId: run.id,
+            status: run.status,
+            url: run.outputs.url || run.outputs.healthCheckUrl || '',
+            strategyId: run.outputs.strategyId || '',
+            error: run.error || '',
+            attemptCount: run.attemptCount,
+            failureHistory: run.failureHistory,
+          };
+          return {
+            ok: run.status === 'completed',
+            displayCommand: `resume deploy ${runId}`,
+            content: stringify(summary),
+            structured: summary,
+            scratchpadNote: run.status === 'completed'
+              ? `Deployment resumed and completed: ${runId}`
+              : `Deployment resume failed: ${runId}`,
+          };
         }
         default:
           throw new Error(`Unknown tool: ${name}`);

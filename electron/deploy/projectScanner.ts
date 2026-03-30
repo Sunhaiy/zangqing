@@ -1,9 +1,38 @@
 import { Dirent, promises as fs } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { PackageManager, ProjectFramework, ProjectSpec } from '../../src/shared/deployTypes.js';
+import {
+  PackageManager,
+  ProjectFramework,
+  ProjectLanguage,
+  ProjectPackaging,
+  ProjectSpec,
+  RuntimeRequirement,
+} from '../../src/shared/deployTypes.js';
 
 type EnvMap = Record<string, string>;
+
+interface ProjectScanSnapshot {
+  rootPath: string;
+  rootFiles: string[];
+  packageJson?: string | null;
+  dockerfile?: string | null;
+  dockerCompose?: string | null;
+  requirements?: string | null;
+  pyproject?: string | null;
+  pomXml?: string | null;
+  gradleFile?: string | null;
+  nvmrc?: string | null;
+  nodeVersionFile?: string | null;
+  runtimeTxt?: string | null;
+  pythonVersionFile?: string | null;
+  readmePath?: string;
+  readmeContent?: string | null;
+  envContents?: Array<{ file: string; content: string }>;
+  sourceEnvUsages?: string[];
+  routeCandidates?: string[];
+  persistentPaths?: string[];
+}
 
 const WINDOWS_PATH_RE = /[A-Za-z]:\\[^\r\n"'`<>|]+/g;
 const POSIX_PATH_RE = /\/(?:Users|home|opt|srv|var|tmp)[^\r\n"'`<>|]*/g;
@@ -130,6 +159,8 @@ function detectPackageManager(rootFiles: string[]): PackageManager | undefined {
   if (rootFiles.includes('bun.lockb') || rootFiles.includes('bun.lock')) return 'bun';
   if (rootFiles.includes('poetry.lock')) return 'poetry';
   if (rootFiles.includes('requirements.txt')) return 'pip';
+  if (rootFiles.includes('mvnw') || rootFiles.includes('pom.xml')) return 'maven';
+  if (rootFiles.includes('gradlew') || rootFiles.includes('build.gradle') || rootFiles.includes('build.gradle.kts')) return 'gradle';
   if (rootFiles.includes('package-lock.json') || rootFiles.includes('package.json')) return 'npm';
   return undefined;
 }
@@ -183,6 +214,8 @@ function detectFramework(input: {
   dockerCompose: string | null;
   requirements: string | null;
   pyproject: string | null;
+  pomXml: string | null;
+  gradleFile: string | null;
 }): { framework: ProjectFramework; evidence: string[] } {
   const dependencies = {
     ...(input.packageJson?.dependencies || {}),
@@ -199,6 +232,16 @@ function detectFramework(input: {
   if (input.dockerfile) {
     evidence.push('Dockerfile found');
     return { framework: 'dockerfile', evidence };
+  }
+
+  const javaContent = `${input.pomXml || ''}\n${input.gradleFile || ''}`.toLowerCase();
+  if (input.pomXml || input.gradleFile) {
+    if (javaContent.includes('spring-boot')) {
+      evidence.push('Spring Boot build file found');
+      return { framework: 'java-spring-boot', evidence };
+    }
+    evidence.push('Java build file found');
+    return { framework: 'java-service', evidence };
   }
 
   if (dependencies.next) {
@@ -246,12 +289,36 @@ function detectFramework(input: {
   return { framework: 'unknown', evidence };
 }
 
+function detectLanguage(framework: ProjectFramework): ProjectLanguage {
+  if (framework === 'docker-compose' || framework === 'dockerfile') return 'docker-native';
+  if (framework === 'vite-static' || framework === 'react-spa') return 'static';
+  if (framework === 'nextjs' || framework === 'node-service') return 'node';
+  if (framework === 'python-fastapi' || framework === 'python-flask' || framework === 'python-service') {
+    return 'python';
+  }
+  if (framework === 'java-spring-boot' || framework === 'java-service') return 'java';
+  return 'unknown';
+}
+
+function detectPackaging(framework: ProjectFramework): ProjectPackaging {
+  if (framework === 'docker-compose') return 'docker-compose';
+  if (framework === 'dockerfile') return 'docker-image';
+  if (framework === 'vite-static' || framework === 'react-spa') return 'static-build';
+  if (framework === 'java-spring-boot' || framework === 'java-service') return 'jar';
+  if (framework === 'unknown') return 'unknown';
+  return 'source';
+}
+
 function detectOutputDir(
   framework: ProjectFramework,
   scripts: Record<string, string> | undefined,
   files: string[],
 ): string | undefined {
   if (framework === 'nextjs') return '.next';
+  if (framework === 'java-spring-boot' || framework === 'java-service') {
+    if (files.includes('target')) return 'target';
+    if (files.includes('build')) return 'build';
+  }
   if (files.includes('dist')) return 'dist';
   if (files.includes('build')) return 'build';
   if (framework === 'vite-static' || framework === 'react-spa') return 'dist';
@@ -395,6 +462,7 @@ async function collectRouteCandidates(rootPath: string, rootFiles: string[]) {
 function detectServiceDependencies(
   packageJson: ProjectSpec['packageJson'] | undefined,
   envVars: EnvMap,
+  dependencyText: string,
 ): string[] {
   const deps = new Set(
     [
@@ -405,6 +473,7 @@ function detectServiceDependencies(
 
   const envKeys = new Set(Object.keys(envVars).map((key) => key.toUpperCase()));
   const envValues = Object.values(envVars).join('\n').toLowerCase();
+  const normalizedDependencyText = dependencyText.toLowerCase();
   const detected = new Set<string>();
 
   if (
@@ -428,7 +497,8 @@ function detectServiceDependencies(
     deps.has('redis') ||
     deps.has('ioredis') ||
     envKeys.has('REDIS_HOST') ||
-    envValues.includes('redis://')
+    envValues.includes('redis://') ||
+    normalizedDependencyText.includes('redis')
   ) {
     detected.add('redis');
   }
@@ -438,9 +508,17 @@ function detectServiceDependencies(
     envKeys.has('MONGO_URL') ||
     envKeys.has('MONGODB_URI') ||
     envValues.includes('mongodb://') ||
-    envValues.includes('mongodb+srv://')
+    envValues.includes('mongodb+srv://') ||
+    normalizedDependencyText.includes('mongodb')
   ) {
     detected.add('mongodb');
+  }
+  if (
+    envKeys.has('KAFKA_BROKERS') ||
+    envValues.includes('kafka:') ||
+    normalizedDependencyText.includes('kafka')
+  ) {
+    detected.add('kafka');
   }
   if (
     !detected.has('postgres') &&
@@ -452,6 +530,153 @@ function detectServiceDependencies(
   }
 
   return Array.from(detected).sort();
+}
+
+function extractNodeVersion(
+  packageJson: ProjectSpec['packageJson'] | undefined,
+  nvmrc: string | null,
+  nodeVersionFile: string | null,
+) {
+  return (
+    packageJson?.engines?.node?.trim() ||
+    nvmrc?.trim() ||
+    nodeVersionFile?.trim() ||
+    undefined
+  );
+}
+
+function extractPythonVersion(
+  pyproject: string | null,
+  runtimeTxt: string | null,
+  pythonVersionFile: string | null,
+) {
+  const pyprojectMatch = pyproject?.match(/requires-python\s*=\s*['"]([^'"]+)['"]/i)?.[1]?.trim();
+  const runtimeMatch = runtimeTxt?.trim();
+  const versionFile = pythonVersionFile?.trim();
+  return pyprojectMatch || runtimeMatch || versionFile || undefined;
+}
+
+function extractJavaVersion(pomXml: string | null, gradleFile: string | null) {
+  const pomMatch =
+    pomXml?.match(/<maven\.compiler\.source>([^<]+)<\/maven\.compiler\.source>/i)?.[1]?.trim() ||
+    pomXml?.match(/<java\.version>([^<]+)<\/java\.version>/i)?.[1]?.trim();
+  const gradleMatch =
+    gradleFile?.match(/sourceCompatibility\s*=\s*['"]?([^'"\s]+)['"]?/i)?.[1]?.trim() ||
+    gradleFile?.match(/JavaVersion\.VERSION_([0-9_]+)/i)?.[1]?.replace(/_/g, '.')?.trim();
+  return pomMatch || gradleMatch || undefined;
+}
+
+function detectRuntimeRequirements(input: {
+  framework: ProjectFramework;
+  nodeVersion?: string;
+  pythonVersion?: string;
+  javaVersion?: string;
+  needsNginx: boolean;
+}): RuntimeRequirement[] {
+  const requirements: RuntimeRequirement[] = [];
+
+  if (['node-service', 'nextjs', 'vite-static', 'react-spa'].includes(input.framework)) {
+    requirements.push({ name: 'node', version: input.nodeVersion });
+  }
+  if (['python-fastapi', 'python-flask', 'python-service'].includes(input.framework)) {
+    requirements.push({ name: 'python', version: input.pythonVersion });
+  }
+  if (['java-spring-boot', 'java-service'].includes(input.framework)) {
+    requirements.push({ name: 'java', version: input.javaVersion });
+  }
+  if (input.framework === 'docker-compose') {
+    requirements.push({ name: 'docker' }, { name: 'docker-compose' });
+  } else if (input.framework === 'dockerfile') {
+    requirements.push({ name: 'docker' });
+  }
+  if (input.needsNginx) {
+    requirements.push({ name: 'nginx' });
+  }
+
+  return requirements;
+}
+
+function detectBuildCommands(input: {
+  framework: ProjectFramework;
+  scripts: Record<string, string>;
+  packageManager?: PackageManager;
+  rootFiles: string[];
+}): string[] {
+  const commands = new Set<string>();
+  if (input.scripts.build) {
+    commands.add(`${input.packageManager || 'npm'} run build`.replace(/^npm run build$/, 'npm run build'));
+  }
+  if (input.framework === 'nextjs' || input.framework === 'vite-static' || input.framework === 'react-spa') {
+    commands.add('npm run build');
+  }
+  if (input.rootFiles.includes('mvnw')) {
+    commands.add('./mvnw -DskipTests package');
+  }
+  if (input.rootFiles.includes('pom.xml')) {
+    commands.add('mvn -DskipTests package');
+  }
+  if (input.rootFiles.includes('gradlew')) {
+    commands.add('./gradlew build -x test');
+  }
+  if (input.rootFiles.includes('build.gradle') || input.rootFiles.includes('build.gradle.kts')) {
+    commands.add('gradle build -x test');
+  }
+  if (input.rootFiles.includes('requirements.txt')) {
+    commands.add('pip install -r requirements.txt');
+  }
+  return Array.from(commands);
+}
+
+function detectStartCommands(input: {
+  framework: ProjectFramework;
+  scripts: Record<string, string>;
+}): string[] {
+  const commands = new Set<string>();
+  if (input.scripts.start) commands.add('npm run start');
+  if (input.framework === 'nextjs') commands.add('npm run start');
+  if (input.framework === 'node-service') commands.add('node server.js');
+  if (input.framework === 'python-fastapi') commands.add('uvicorn main:app --host 0.0.0.0 --port 8000');
+  if (input.framework === 'python-flask') commands.add('flask run --host 0.0.0.0 --port 8000');
+  if (input.framework === 'java-spring-boot' || input.framework === 'java-service') {
+    commands.add('java -jar <build-artifact>.jar');
+  }
+  return Array.from(commands);
+}
+
+function detectDeploymentHints(input: {
+  framework: ProjectFramework;
+  rootFiles: string[];
+  outputDir?: string;
+  serviceDependencies: string[];
+}) {
+  const hints = new Set<string>();
+  if (input.framework === 'docker-compose') {
+    hints.add('Prefer repository-native docker compose deployment');
+  }
+  if (input.framework === 'dockerfile') {
+    hints.add('Prefer repository-native Docker image deployment');
+  }
+  if (input.framework === 'vite-static' || input.framework === 'react-spa') {
+    hints.add(`Build static assets and publish ${input.outputDir || 'dist'} behind nginx`);
+  }
+  if (input.framework === 'java-spring-boot') {
+    hints.add('Build Spring Boot artifact and run it as a systemd service');
+  }
+  if (input.serviceDependencies.length > 0) {
+    hints.add(`Auto-provision local dependencies when possible: ${input.serviceDependencies.join(', ')}`);
+  }
+  if (input.rootFiles.includes('.env.example')) {
+    hints.add('Prefer env-file driven deployment');
+  }
+  return Array.from(hints);
+}
+
+function estimateConfidence(framework: ProjectFramework, evidence: string[]) {
+  if (framework === 'unknown') return 0.25;
+  if (framework === 'docker-compose' || framework === 'dockerfile') return 0.98;
+  if (framework === 'java-spring-boot') return 0.94;
+  if (framework === 'java-service') return 0.88;
+  return Math.min(0.92, 0.55 + evidence.length * 0.08);
 }
 
 function normalizeRoutePath(routePath: string) {
@@ -555,6 +780,300 @@ async function detectPersistentPaths(rootPath: string): Promise<string[]> {
   return Array.from(new Set(detected)).sort();
 }
 
+function safeParseJson<T>(raw: string | null | undefined): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function uniqStrings(values: Array<string | undefined | null>) {
+  return Array.from(
+    new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))),
+  );
+}
+
+function findReadmeFile(rootFiles: string[]) {
+  return rootFiles.find((name) => /^readme(?:\.[^.]+)?$/i.test(name));
+}
+
+function summarizeReadme(readme: string | null | undefined) {
+  if (!readme) return undefined;
+  const lines = readme
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  if (lines.length === 0) return undefined;
+  const summary = lines.join(' ').replace(/\s+/g, ' ').trim();
+  return summary.length > 280 ? `${summary.slice(0, 277)}...` : summary;
+}
+
+function deriveProjectName(rootPath: string) {
+  try {
+    if (/^https?:\/\//i.test(rootPath)) {
+      const url = new URL(rootPath);
+      const segment = url.pathname.replace(/\/+$/, '').split('/').filter(Boolean).pop();
+      if (segment) return segment.replace(/\.git$/i, '').toLowerCase();
+    }
+  } catch {
+    // Ignore URL parsing failures and fall back to path basename.
+  }
+
+  return path.basename(rootPath).replace(/[^a-zA-Z0-9-_]+/g, '-').toLowerCase() || 'app';
+}
+
+function extractReadmeInsights(readme: string | null | undefined) {
+  const content = readme || '';
+  const lower = content.toLowerCase();
+  const buildCommands = new Set<string>();
+  const startCommands = new Set<string>();
+  const deploymentHints = new Set<string>();
+  const routeCandidates = new Set<string>();
+  const ports = new Set<number>();
+  const serviceDependencies = new Set<string>();
+  const evidence = new Set<string>();
+
+  for (const port of findPorts(content)) {
+    ports.add(port);
+  }
+
+  for (const match of content.matchAll(/(?:^|\s)(\/[A-Za-z0-9\-._~\/]+)(?=\s|$)/g)) {
+    const normalized = normalizeRoutePath(match[1]);
+    if (normalized) routeCandidates.add(normalized);
+  }
+
+  const addBuild = (pattern: RegExp, command: string, hint: string) => {
+    if (pattern.test(content)) {
+      buildCommands.add(command);
+      deploymentHints.add(hint);
+      evidence.add(`README mentions ${command}`);
+    }
+  };
+  const addStart = (pattern: RegExp, command: string, hint: string) => {
+    if (pattern.test(content)) {
+      startCommands.add(command);
+      deploymentHints.add(hint);
+      evidence.add(`README mentions ${command}`);
+    }
+  };
+
+  if (/docker compose up|docker-compose up/i.test(content)) {
+    deploymentHints.add('README recommends Docker Compose deployment');
+    evidence.add('README mentions docker compose');
+  }
+  if (/docker build|docker run/i.test(content)) {
+    deploymentHints.add('README recommends Docker image deployment');
+    evidence.add('README mentions docker build/run');
+  }
+
+  addBuild(/\bnpm\s+run\s+build\b/i, 'npm run build', 'README documents npm build');
+  addBuild(/\bpnpm\s+build\b/i, 'pnpm build', 'README documents pnpm build');
+  addBuild(/\byarn\s+build\b/i, 'yarn build', 'README documents yarn build');
+  addBuild(/\bbun\s+run\s+build\b/i, 'bun run build', 'README documents Bun build');
+  addBuild(/\bmvn(?:w)?\s+[^\n\r]*package\b/i, 'mvn -DskipTests package', 'README documents Maven packaging');
+  addBuild(/\bgradle(?:w)?\s+[^\n\r]*build\b/i, 'gradle build -x test', 'README documents Gradle build');
+  addBuild(/\bpip\s+install\s+-r\s+requirements\.txt\b/i, 'pip install -r requirements.txt', 'README documents pip install');
+  addBuild(/\bpoetry\s+install\b/i, 'poetry install', 'README documents poetry install');
+
+  addStart(/\bnpm\s+(?:run\s+)?start\b/i, 'npm run start', 'README documents npm start');
+  addStart(/\bpnpm\s+start\b/i, 'pnpm start', 'README documents pnpm start');
+  addStart(/\byarn\s+start\b/i, 'yarn start', 'README documents yarn start');
+  addStart(/\buvicorn\b/i, 'uvicorn main:app --host 0.0.0.0 --port 8000', 'README documents uvicorn startup');
+  addStart(/\bgunicorn\b/i, 'gunicorn app:app', 'README documents gunicorn startup');
+  addStart(/\bflask\s+run\b/i, 'flask run --host 0.0.0.0 --port 8000', 'README documents Flask startup');
+  addStart(/\bpython\s+manage\.py\s+runserver\b/i, 'python manage.py runserver 0.0.0.0:8000', 'README documents Django startup');
+  addStart(/\bjava\s+-jar\b/i, 'java -jar <build-artifact>.jar', 'README documents jar startup');
+
+  if (/postgres|postgresql/i.test(lower)) serviceDependencies.add('postgres');
+  if (/mysql/i.test(lower)) serviceDependencies.add('mysql');
+  if (/redis/i.test(lower)) serviceDependencies.add('redis');
+  if (/mongodb/i.test(lower)) serviceDependencies.add('mongodb');
+  if (/kafka/i.test(lower)) serviceDependencies.add('kafka');
+
+  return {
+    buildCommands: Array.from(buildCommands),
+    startCommands: Array.from(startCommands),
+    deploymentHints: Array.from(deploymentHints),
+    routeCandidates: Array.from(routeCandidates),
+    ports: Array.from(ports),
+    serviceDependencies: Array.from(serviceDependencies),
+    evidence: Array.from(evidence),
+  };
+}
+
+function buildProjectSpecFromSnapshot(snapshot: ProjectScanSnapshot): ProjectSpec {
+  const rootFiles = snapshot.rootFiles;
+  const packageJson = safeParseJson<ProjectSpec['packageJson']>(snapshot.packageJson) || undefined;
+  const { framework, evidence } = detectFramework({
+    files: rootFiles,
+    packageJson,
+    dockerfile: snapshot.dockerfile || null,
+    dockerCompose: snapshot.dockerCompose || null,
+    requirements: snapshot.requirements || null,
+    pyproject: snapshot.pyproject || null,
+    pomXml: snapshot.pomXml || null,
+    gradleFile: snapshot.gradleFile || null,
+  });
+
+  const envSource = {
+    envContents: snapshot.envContents || [],
+    requiredEnvVars: Array.from(
+      new Set(
+        (snapshot.envContents || []).flatMap((item) => Object.keys(parseEnvText(item.content || ''))),
+      ),
+    ).sort(),
+    suggestedEnvVars: (snapshot.envContents || []).reduce<EnvMap>((acc, item) => {
+      const parsed = parseEnvText(item.content || '');
+      for (const [key, value] of Object.entries(parsed)) {
+        if (!(key in acc) || value) acc[key] = value;
+      }
+      return acc;
+    }, {}),
+  };
+  const sourceEnvUsages = snapshot.sourceEnvUsages || [];
+  const scripts = packageJson?.scripts || {};
+  const language = detectLanguage(framework);
+  const packaging = detectPackaging(framework);
+  const packageManager = detectPackageManager(rootFiles);
+  const outputDir = detectOutputDir(framework, scripts, rootFiles);
+  const readmeInsights = extractReadmeInsights(snapshot.readmeContent);
+  const suggestedEnvVars = {
+    ...envSource.suggestedEnvVars,
+  };
+  const requiredEnvVars = Array.from(
+    new Set([...envSource.requiredEnvVars, ...sourceEnvUsages]),
+  ).sort();
+  const dependencyText = [
+    snapshot.requirements || '',
+    snapshot.pyproject || '',
+    snapshot.pomXml || '',
+    snapshot.gradleFile || '',
+    snapshot.readmeContent || '',
+  ].join('\n');
+  const serviceDependencies = uniqStrings([
+    ...detectServiceDependencies(packageJson, suggestedEnvVars, dependencyText),
+    ...readmeInsights.serviceDependencies,
+  ]) as ProjectSpec['serviceDependencies'];
+  const migrationScripts = detectMigrationScripts(packageJson, rootFiles);
+  const migrationCommands = detectMigrationCommands(packageJson, rootFiles);
+  const healthCheckCandidates = Array.from(
+    new Set([
+      ...(snapshot.routeCandidates || []),
+      ...readmeInsights.routeCandidates,
+      ...DEFAULT_HEALTH_PATHS,
+    ]),
+  )
+    .map((item) => normalizeRoutePath(item) || '')
+    .filter(Boolean)
+    .sort((a, b) => scoreHealthCandidate(a) - scoreHealthCandidate(b) || a.localeCompare(b))
+    .slice(0, 12);
+  const persistentPaths = uniqStrings(
+    snapshot.persistentPaths && snapshot.persistentPaths.length > 0
+      ? snapshot.persistentPaths
+      : PERSISTENT_DIR_HINTS.filter((item) => rootFiles.includes(item.split('/')[0])),
+  );
+  const nodeVersion = extractNodeVersion(packageJson, snapshot.nvmrc || null, snapshot.nodeVersionFile || null);
+  const pythonVersion = extractPythonVersion(snapshot.pyproject || null, snapshot.runtimeTxt || null, snapshot.pythonVersionFile || null);
+  const javaVersion = extractJavaVersion(snapshot.pomXml || null, snapshot.gradleFile || null);
+  const runtimeRequirements = detectRuntimeRequirements({
+    framework,
+    nodeVersion,
+    pythonVersion,
+    javaVersion,
+    needsNginx:
+      framework === 'vite-static' ||
+      framework === 'react-spa' ||
+      framework === 'node-service' ||
+      framework === 'nextjs' ||
+      framework === 'python-fastapi' ||
+      framework === 'python-flask' ||
+      framework === 'python-service' ||
+      framework === 'java-spring-boot' ||
+      framework === 'java-service',
+  });
+  const buildCommands = uniqStrings([
+    ...detectBuildCommands({
+      framework,
+      scripts,
+      packageManager,
+      rootFiles,
+    }),
+    ...readmeInsights.buildCommands,
+  ]);
+  const startCommands = uniqStrings([
+    ...detectStartCommands({
+      framework,
+      scripts,
+    }),
+    ...readmeInsights.startCommands,
+  ]);
+  const deploymentHints = uniqStrings([
+    ...detectDeploymentHints({
+      framework,
+      rootFiles,
+      outputDir,
+      serviceDependencies,
+    }),
+    ...readmeInsights.deploymentHints,
+  ]);
+  const confidence = Math.min(
+    0.99,
+    estimateConfidence(framework, evidence) + (snapshot.readmeContent ? 0.03 : 0),
+  );
+  const readmePath = snapshot.readmePath;
+  const readmeSummary = summarizeReadme(snapshot.readmeContent);
+
+  const portSources = [
+    packageJson ? JSON.stringify(packageJson) : '',
+    snapshot.dockerfile || '',
+    snapshot.dockerCompose || '',
+    snapshot.requirements || '',
+    snapshot.pyproject || '',
+    snapshot.pomXml || '',
+    snapshot.gradleFile || '',
+    snapshot.readmeContent || '',
+    ...envSource.envContents.map((item) => item.content),
+  ].join('\n');
+
+  const projectName = packageJson?.name || deriveProjectName(snapshot.rootPath);
+
+  return {
+    id: crypto.createHash('sha1').update(snapshot.rootPath).digest('hex'),
+    rootPath: snapshot.rootPath,
+    name: projectName,
+    fingerprints: rootFiles,
+    framework,
+    language,
+    packaging,
+    packageManager,
+    buildCommand: scripts.build || buildCommands[0],
+    startCommand: scripts.start || startCommands[0],
+    outputDir,
+    envFiles: (snapshot.envContents || []).map((item) => item.file),
+    ports: uniqNumbers([...findPorts(portSources), ...readmeInsights.ports]),
+    evidence: uniqStrings([...evidence, ...readmeInsights.evidence]),
+    packageJson,
+    files: rootFiles,
+    requiredEnvVars,
+    suggestedEnvVars,
+    serviceDependencies,
+    migrationScripts,
+    migrationCommands,
+    healthCheckCandidates,
+    persistentPaths,
+    runtimeRequirements,
+    buildCommands,
+    startCommands,
+    deploymentHints,
+    confidence,
+    readmePath,
+    readmeSummary,
+  };
+}
+
 export class ProjectScanner {
   async resolveProjectRoot(rootPathInput: string): Promise<string> {
     for (const candidate of extractPathCandidates(rootPathInput)) {
@@ -564,82 +1083,44 @@ export class ProjectScanner {
     throw new Error(`Local path does not exist: ${rootPathInput}`);
   }
 
+  async scanSnapshot(snapshot: ProjectScanSnapshot): Promise<ProjectSpec> {
+    return buildProjectSpecFromSnapshot(snapshot);
+  }
+
   async scan(rootPathInput: string): Promise<ProjectSpec> {
     const rootPath = await this.resolveProjectRoot(rootPathInput);
     const rootFiles = await listRootFiles(rootPath);
-    const packageJson = await readJsonIfExists<ProjectSpec['packageJson']>(
-      path.join(rootPath, 'package.json'),
-    );
-    const dockerfile = await readTextIfExists(path.join(rootPath, 'Dockerfile'));
-    const dockerCompose =
-      (await readTextIfExists(path.join(rootPath, 'docker-compose.yml'))) ||
-      (await readTextIfExists(path.join(rootPath, 'compose.yml')));
-    const requirements = await readTextIfExists(path.join(rootPath, 'requirements.txt'));
-    const pyproject = await readTextIfExists(path.join(rootPath, 'pyproject.toml'));
-
-    const { framework, evidence } = detectFramework({
-      files: rootFiles,
-      packageJson: packageJson || undefined,
-      dockerfile,
-      dockerCompose,
-      requirements,
-      pyproject,
-    });
-
+    const readmeFile = findReadmeFile(rootFiles);
     const envFiles = rootFiles.filter((name) => name.startsWith('.env'));
     const envSource = await collectEnvSources(rootPath, envFiles);
     const sourceEnvUsages = await collectSourceEnvUsages(rootPath, rootFiles);
-    const packageManager = detectPackageManager(rootFiles);
-    const scripts = packageJson?.scripts || {};
-    const outputDir = detectOutputDir(framework, scripts, rootFiles);
-    const suggestedEnvVars = {
-      ...envSource.suggestedEnvVars,
-    };
-    const requiredEnvVars = Array.from(
-      new Set([...envSource.requiredEnvVars, ...sourceEnvUsages]),
-    ).sort();
-    const serviceDependencies = detectServiceDependencies(packageJson || undefined, suggestedEnvVars);
-    const migrationScripts = detectMigrationScripts(packageJson || undefined, rootFiles);
-    const migrationCommands = detectMigrationCommands(packageJson || undefined, rootFiles);
     const healthCheckCandidates = await collectRouteCandidates(rootPath, rootFiles);
     const persistentPaths = await detectPersistentPaths(rootPath);
 
-    const portSources = [
-      packageJson ? JSON.stringify(packageJson) : '',
-      dockerfile || '',
-      dockerCompose || '',
-      requirements || '',
-      pyproject || '',
-      ...envSource.envContents.map((item) => item.content),
-    ].join('\n');
-
-    const projectName =
-      packageJson?.name ||
-      path.basename(rootPath).replace(/[^a-zA-Z0-9-_]+/g, '-').toLowerCase() ||
-      'app';
-
-    return {
-      id: crypto.createHash('sha1').update(rootPath).digest('hex'),
+    return this.scanSnapshot({
       rootPath,
-      name: projectName,
-      fingerprints: rootFiles,
-      framework,
-      packageManager,
-      buildCommand: scripts.build,
-      startCommand: scripts.start,
-      outputDir,
-      envFiles,
-      ports: findPorts(portSources),
-      evidence,
-      packageJson: packageJson || undefined,
-      files: rootFiles,
-      requiredEnvVars,
-      suggestedEnvVars,
-      serviceDependencies,
-      migrationScripts,
-      migrationCommands,
-      healthCheckCandidates,
+      rootFiles,
+      packageJson: await readTextIfExists(path.join(rootPath, 'package.json')),
+      dockerfile: await readTextIfExists(path.join(rootPath, 'Dockerfile')),
+      dockerCompose:
+        (await readTextIfExists(path.join(rootPath, 'docker-compose.yml'))) ||
+        (await readTextIfExists(path.join(rootPath, 'compose.yml'))),
+      requirements: await readTextIfExists(path.join(rootPath, 'requirements.txt')),
+      pyproject: await readTextIfExists(path.join(rootPath, 'pyproject.toml')),
+      pomXml: await readTextIfExists(path.join(rootPath, 'pom.xml')),
+      gradleFile:
+        (await readTextIfExists(path.join(rootPath, 'build.gradle'))) ||
+        (await readTextIfExists(path.join(rootPath, 'build.gradle.kts'))),
+      nvmrc: await readTextIfExists(path.join(rootPath, '.nvmrc')),
+      nodeVersionFile: await readTextIfExists(path.join(rootPath, '.node-version')),
+      runtimeTxt: await readTextIfExists(path.join(rootPath, 'runtime.txt')),
+      pythonVersionFile: await readTextIfExists(path.join(rootPath, '.python-version')),
+      readmePath: readmeFile,
+      readmeContent: readmeFile ? await readTextIfExists(path.join(rootPath, readmeFile)) : null,
+      envContents: envSource.envContents,
+      sourceEnvUsages,
+      routeCandidates: healthCheckCandidates,
       persistentPaths,
-    };
+    });
   }
 }

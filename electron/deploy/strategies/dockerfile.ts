@@ -1,13 +1,28 @@
-import { DeployPlan, ProjectSpec, ServerSpec } from '../../../src/shared/deployTypes.js';
+import { DeployPlan, DeployStep, ProjectSpec, ServerSpec } from '../../../src/shared/deployTypes.js';
 import { renderProxyNginxConfig } from '../templates/nginx.js';
 import { renderEnvTemplate } from '../templates/env.js';
-import { BuildPlanInput, DeployStrategy, shQuote, withContext } from './base.js';
+import {
+  BuildPlanInput,
+  DeployStrategy,
+  StrategyBuildContext,
+  StrategyRepairContext,
+  buildArchiveTransferSteps,
+  buildEnsureDockerCommand,
+  buildEnsureNginxCommand,
+  shQuote,
+  withContext,
+} from './base.js';
 
 export class DockerfileStrategy implements DeployStrategy {
   id = 'dockerfile' as const;
 
   supports(project: ProjectSpec, server: ServerSpec): boolean {
-    return project.framework === 'dockerfile' && server.hasDocker;
+    return project.framework === 'dockerfile' && (server.hasDocker || server.installCapabilities.canInstallDocker);
+  }
+
+  score(project: ProjectSpec, server: ServerSpec): number {
+    if (project.framework !== 'dockerfile') return 0;
+    return server.hasDocker ? 110 : 88;
   }
 
   async buildPlan(input: BuildPlanInput): Promise<DeployPlan> {
@@ -15,47 +30,21 @@ export class DockerfileStrategy implements DeployStrategy {
     const runtimePort = ctx.profile.runtimePort || ctx.project.ports[0] || 3000;
     const containerName = ctx.profile.appName;
     const imageName = `${ctx.profile.appName}:${ctx.releaseId}`;
-    const envFilePath = `${ctx.releaseDir}/.env`;
+    const envFilePath = `${ctx.projectDir}/.env`;
     const finalUrl = ctx.profile.domain
       ? `${ctx.profile.enableHttps ? 'https' : 'http'}://${ctx.profile.domain}${ctx.profile.healthCheckPath || ''}`
       : `http://${ctx.connectionHost}:${runtimePort}${ctx.profile.healthCheckPath || ''}`;
 
     const steps: DeployPlan['steps'] = [
       { kind: 'local_scan', id: 'scan', label: 'Analyze project' },
-      {
-        kind: 'local_pack',
-        id: 'pack',
-        label: 'Pack project',
-        sourceDir: ctx.profile.projectRoot,
-        outFile: ctx.archiveLocalPath,
-      },
-      {
-        kind: 'ssh_exec',
-        id: 'prepare',
-        label: 'Prepare release directories',
-        command: `mkdir -p ${shQuote(`${ctx.profile.remoteRoot}/releases`)}`,
-        sudo: true,
-      },
-      {
-        kind: 'sftp_upload',
-        id: 'upload',
-        label: 'Upload release archive',
-        localPath: ctx.archiveLocalPath,
-        remotePath: ctx.archiveRemotePath,
-      },
-      {
-        kind: 'remote_extract',
-        id: 'extract',
-        label: 'Extract release',
-        archivePath: ctx.archiveRemotePath,
-        targetDir: ctx.releaseDir,
-      },
+      ...buildArchiveTransferSteps(ctx),
+      ...buildProvisionSteps(ctx.server, Boolean(ctx.profile.domain)),
       ...(Object.keys(ctx.profile.envVars).length > 0
         ? [{
             kind: 'remote_write_file' as const,
             id: 'env',
             label: 'Write env file',
-            path: envFilePath,
+            path: `${ctx.projectDir}/.env`,
             content: renderEnvTemplate(ctx.profile.envVars),
           }]
         : []),
@@ -64,7 +53,7 @@ export class DockerfileStrategy implements DeployStrategy {
         id: 'docker-build',
         label: 'Build container image',
         command: `docker build -t ${shQuote(imageName)} .`,
-        cwd: ctx.releaseDir,
+        cwd: ctx.projectDir,
       },
       {
         kind: 'ssh_exec',
@@ -74,7 +63,7 @@ export class DockerfileStrategy implements DeployStrategy {
       },
     ];
 
-    if (ctx.profile.domain && ctx.server.hasNginx) {
+    if (ctx.profile.domain) {
       steps.push(
         {
           kind: 'remote_write_file',
@@ -119,7 +108,88 @@ export class DockerfileStrategy implements DeployStrategy {
       summary: `Deploy ${ctx.project.name} from Dockerfile`,
       releaseId: ctx.releaseId,
       steps,
-      rollbackSteps: [],
+      rollbackSteps: [
+        {
+          kind: 'ssh_exec',
+          id: 'docker-rollback-stop',
+          label: 'Stop container',
+          command: `docker rm -f ${shQuote(containerName)} >/dev/null 2>&1 || true`,
+        },
+      ],
     };
   }
+
+  repairRules(context: StrategyRepairContext): DeployStep[] {
+    const steps: DeployStep[] = [];
+
+    if (context.failureClass === 'runtime_missing') {
+      const ensureDocker = buildEnsureDockerCommand(context.server);
+      if (ensureDocker) {
+        steps.push({
+          kind: 'ssh_exec',
+          id: `repair-docker-runtime-${context.attempt}`,
+          label: 'Repair Docker runtime',
+          command: `${ensureDocker} && systemctl enable docker >/dev/null 2>&1 || true && systemctl start docker >/dev/null 2>&1 || true`,
+          sudo: true,
+        });
+      }
+    }
+
+    if (context.failureClass === 'docker_run_failed' || context.failureClass === 'port_conflict') {
+      steps.push({
+        kind: 'ssh_exec',
+        id: `repair-docker-run-${context.attempt}`,
+        label: 'Remove old container',
+        command: `docker rm -f ${shQuote(context.profile.appName)} >/dev/null 2>&1 || true`,
+      });
+    }
+
+    if (context.failureClass === 'proxy_failed' && context.profile.domain) {
+      steps.push({
+        kind: 'ssh_exec',
+        id: `repair-docker-nginx-${context.attempt}`,
+        label: 'Reload Nginx',
+        command: 'nginx -t && systemctl reload nginx',
+        sudo: true,
+      });
+    }
+
+    return steps;
+  }
+
+  verifyTargets(context: StrategyBuildContext) {
+    return {
+      urls: [context.finalUrl],
+      services: [],
+    };
+  }
+}
+
+function buildProvisionSteps(server: ServerSpec, needsNginx: boolean) {
+  const steps: DeployPlan['steps'] = [];
+  const ensureDocker = !server.hasDocker ? buildEnsureDockerCommand(server) : null;
+  if (ensureDocker) {
+    steps.push({
+      kind: 'ssh_exec',
+      id: 'install-docker',
+      label: 'Install Docker runtime',
+      command: `${ensureDocker} && systemctl enable docker >/dev/null 2>&1 || true && systemctl start docker >/dev/null 2>&1 || true`,
+      sudo: true,
+    });
+  }
+
+  if (needsNginx) {
+    const ensureNginx = !server.hasNginx ? buildEnsureNginxCommand(server) : null;
+    if (ensureNginx) {
+      steps.push({
+        kind: 'ssh_exec',
+        id: 'install-nginx',
+        label: 'Install Nginx',
+        command: ensureNginx,
+        sudo: true,
+      });
+    }
+  }
+
+  return steps;
 }
