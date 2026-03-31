@@ -26,8 +26,9 @@ export class DockerComposeStrategy implements DeployStrategy {
 
   supports(project: ProjectSpec, server: ServerSpec): boolean {
     return (
-      project.framework === 'docker-compose' &&
-      (server.hasDocker || server.installCapabilities.canInstallDocker)
+      project.framework === 'docker-compose' ||
+      project.files.includes('docker-compose.yml') ||
+      project.files.includes('compose.yml')
     );
   }
 

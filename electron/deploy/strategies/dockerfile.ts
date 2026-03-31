@@ -17,7 +17,7 @@ export class DockerfileStrategy implements DeployStrategy {
   id = 'dockerfile' as const;
 
   supports(project: ProjectSpec, server: ServerSpec): boolean {
-    return project.framework === 'dockerfile' && (server.hasDocker || server.installCapabilities.canInstallDocker);
+    return project.framework === 'dockerfile' || project.files.includes('Dockerfile');
   }
 
   score(project: ProjectSpec, server: ServerSpec): number {

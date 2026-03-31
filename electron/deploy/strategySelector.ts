@@ -27,9 +27,53 @@ export class StrategySelector {
     new PythonSystemdStrategy(),
   ];
 
+  private findStrategy(id: DeploymentStrategyId) {
+    return this.strategies.find((strategy) => strategy.id === id);
+  }
+
+  private inferFallbackStrategy(project: ProjectSpec): DeployStrategy | null {
+    if (
+      project.framework === 'docker-compose' ||
+      project.files.includes('docker-compose.yml') ||
+      project.files.includes('compose.yml')
+    ) {
+      return this.findStrategy('docker-compose') || null;
+    }
+
+    if (project.framework === 'dockerfile' || project.files.includes('Dockerfile')) {
+      return this.findStrategy('dockerfile') || null;
+    }
+
+    if (project.framework === 'java-spring-boot' || project.framework === 'java-service') {
+      return this.findStrategy('java-systemd') || null;
+    }
+
+    if (project.framework === 'nextjs') {
+      return this.findStrategy('next-standalone') || null;
+    }
+
+    if (project.framework === 'vite-static' || project.framework === 'react-spa') {
+      return this.findStrategy('static-nginx') || null;
+    }
+
+    if (project.framework === 'node-service') {
+      return this.findStrategy('node-systemd') || null;
+    }
+
+    if (
+      project.framework === 'python-fastapi' ||
+      project.framework === 'python-flask' ||
+      project.framework === 'python-service'
+    ) {
+      return this.findStrategy('python-systemd') || null;
+    }
+
+    return null;
+  }
+
   select(project: ProjectSpec, server: ServerSpec, preferred?: DeploymentStrategyId): DeployStrategy {
     if (preferred) {
-      const candidate = this.strategies.find((strategy) => strategy.id === preferred);
+      const candidate = this.findStrategy(preferred);
       if (candidate && candidate.supports(project, server)) {
         return candidate;
       }
@@ -39,6 +83,10 @@ export class StrategySelector {
       .filter((item) => item.supports(project, server))
       .sort((a, b) => b.score(project, server) - a.score(project, server))[0];
     if (!strategy) {
+      const fallback = this.inferFallbackStrategy(project);
+      if (fallback) {
+        return fallback;
+      }
       throw new Error(`No supported deployment strategy for project "${project.framework}" on this server`);
     }
     return strategy;
