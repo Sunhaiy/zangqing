@@ -101,7 +101,6 @@ sshtool
 |  |- services/         # 프런트엔드 서비스
 |  |- shared/           # 공통 타입과 로케일
 |  `- store/            # Zustand 스토어
-|- docs/                # 설계 및 문서
 `- .github/workflows/   # 빌드와 릴리스
 ```
 

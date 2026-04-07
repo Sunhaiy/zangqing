@@ -31,6 +31,8 @@ import {
   createPlanState,
   extractDeploySource,
   isContinueIntent,
+  isOptionSelection,
+  looksLikeSiteFollowUpGoal,
   normalizePathCandidate,
   now,
   phaseToPlanStatus,
@@ -155,7 +157,8 @@ export class AgentSessionStore {
       threadMessages?: AgentRuntimeMessage[];
     },
   ) {
-    const resumingGoal = isContinueIntent(options.goal);
+    const resumingGoal = isContinueIntent(options.goal)
+      || (isOptionSelection(options.goal) && Boolean(session.activeTaskRun) && !['completed', 'failed'].includes(session.activeTaskRun?.status || ''));
     const previousGoal = session.activeTaskRun?.goal || session.planState.global_goal;
     const effectiveGoal = resumingGoal && previousGoal ? previousGoal : options.goal.trim();
 
@@ -168,7 +171,18 @@ export class AgentSessionStore {
 
     const remoteHost = session.sshHost || this.sshMgr.getConnectionConfig(session.connectionId)?.host || 'server';
     session.sshHost = remoteHost;
-    session.remoteContext = await probeRemoteContext(this.sshMgr, session.connectionId, remoteHost).catch(() => ({
+    session.remoteContext = await probeRemoteContext(
+      this.sshMgr,
+      session.connectionId,
+      remoteHost,
+      () => {
+        if (session.webContents.isDestroyed()) return;
+        session.webContents.send('terminal-data', {
+          id: session.connectionId,
+          data: `\r\n\x1b[33m[Agent] SSH connection dropped. Auto-reconnected while refreshing the remote context...\x1b[0m\r\n`,
+        });
+      },
+    ).catch(() => ({
       host: remoteHost,
       user: 'unknown',
       pwd: '~',
@@ -179,6 +193,7 @@ export class AgentSessionStore {
 
     this.captureKnownProjectPaths(session, effectiveGoal);
     await this.refreshMemory(session, this.pickLikelyProjectPath(session.knownProjectPaths));
+    this.seedFollowUpMemory(session, effectiveGoal);
     this.historyPush(session, { role: 'user', content: options.goal });
     return {
       effectiveGoal,
@@ -620,6 +635,14 @@ export class AgentSessionStore {
   }
 
   async resolveDeploySource(session: AgentThreadSession, goal: string) {
+    const followUpSource = this.inferFollowUpSource(session, goal);
+    if (followUpSource) {
+      if (!session.knownProjectPaths.includes(followUpSource)) {
+        session.knownProjectPaths.push(followUpSource);
+      }
+      return followUpSource;
+    }
+
     const directMatch = extractDeploySource(goal, session.knownProjectPaths);
     if (directMatch) return directMatch;
 
@@ -732,6 +755,62 @@ export class AgentSessionStore {
       return null;
     }
     return null;
+  }
+
+  private inferFollowUpSource(session: AgentThreadSession, goal: string) {
+    if (!looksLikeSiteFollowUpGoal(goal)) return null;
+
+    const run = session.activeTaskRun;
+    if (!run?.source?.label) return null;
+
+    const looksSuccessful = Boolean(run.finalUrl) || run.status === 'completed';
+    if (!looksSuccessful) return null;
+
+    const mentionedUrls = this.extractUrls(goal);
+    if (mentionedUrls.length > 0) {
+      if (!run.finalUrl) return null;
+      try {
+        const finalHost = new URL(run.finalUrl).host;
+        const mentionedHosts = mentionedUrls.map((item) => {
+          try {
+            return new URL(item).host;
+          } catch {
+            return '';
+          }
+        }).filter(Boolean);
+        if (!mentionedHosts.includes(finalHost)) {
+          return null;
+        }
+      } catch {
+        return null;
+      }
+    } else if (now() - run.updatedAt > 30 * 60 * 1000) {
+      return null;
+    }
+
+    return run.source.label;
+  }
+
+  private seedFollowUpMemory(session: AgentThreadSession, goal: string) {
+    if (!looksLikeSiteFollowUpGoal(goal)) return;
+    const run = session.activeTaskRun;
+    if (!run?.source?.label) return;
+    if (!(run.finalUrl || run.status === 'completed')) return;
+
+    const route = run.activeHypothesisId
+      ? run.hypotheses.find((item) => item.id === run.activeHypothesisId)?.kind
+      : undefined;
+    const handoff = [
+      `Follow-up site context: ${run.source.label}`,
+      run.finalUrl ? `Last deployed URL: ${run.finalUrl}` : '',
+      route ? `Last successful route: ${route}` : '',
+      'Treat domain, HTTPS, Certbot, or SSL renewal requests as operations on this deployed site unless the user names a different project.',
+    ].filter(Boolean).join('\n');
+
+    session.compressedMemory = clip(
+      session.compressedMemory ? `${session.compressedMemory}\n\n${handoff}` : handoff,
+      6000,
+    );
   }
 
   private pickLikelyProjectPath(candidates: string[]) {

@@ -101,7 +101,6 @@ sshtool
 |  |- services/         # フロントエンドサービス
 |  |- shared/           # 共通型とロケール
 |  `- store/            # Zustand ストア
-|- docs/                # 設計メモとドキュメント
 `- .github/workflows/   # ビルドとリリース
 ```
 

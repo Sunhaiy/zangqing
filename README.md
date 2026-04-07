@@ -101,7 +101,6 @@ sshtool
 |  |- services/         # Frontend service layer
 |  |- shared/           # Shared types and locale resources
 |  `- store/            # Zustand stores
-|- docs/                # Architecture and design notes
 `- .github/workflows/   # Build and release workflows
 ```
 

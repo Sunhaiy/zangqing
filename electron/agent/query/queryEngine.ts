@@ -19,9 +19,12 @@ import {
   MAX_GENERIC_TURNS,
   clip,
   formatElapsed,
+  GITHUB_PROJECT_URL_RE,
+  LOCAL_PROJECT_PATH_RE,
   makeArtifact,
   now,
   phaseToPlanStatus,
+  looksLikeSiteFollowUpGoal,
   safeParseArgs,
   serializeValue,
   toolCallSummary,
@@ -65,6 +68,7 @@ export class AgentQueryEngine {
     goal: string,
     options: AgentTaskRunOptions,
   ): Promise<boolean> {
+    const siteFollowUpGoal = looksLikeSiteFollowUpGoal(goal);
     const continuingRun =
       options.resumeRequested &&
       Boolean(session.activeTaskRun) &&
@@ -73,6 +77,15 @@ export class AgentQueryEngine {
     const sourceLabel = continuingRun
       ? session.activeTaskRun?.source?.label || await this.store.resolveDeploySource(session, goal)
       : await this.store.resolveDeploySource(session, goal);
+
+    GITHUB_PROJECT_URL_RE.lastIndex = 0;
+    LOCAL_PROJECT_PATH_RE.lastIndex = 0;
+    const explicitProjectSourceInGoal =
+      GITHUB_PROJECT_URL_RE.test(goal) || LOCAL_PROJECT_PATH_RE.test(goal);
+
+    if (siteFollowUpGoal && !explicitProjectSourceInGoal && !continuingRun) {
+      return this.runSiteFollowUpTask(session, goal, sourceLabel || undefined);
+    }
 
     if (sourceLabel) {
       return this.runAutonomousProjectTask(session, goal, sourceLabel, continuingRun, options);
@@ -138,6 +151,30 @@ export class AgentQueryEngine {
     } finally {
       this.events.emitPlanUpdate(session, session.aborted ? 'stopped' : completed ? 'done' : 'stopped');
     }
+  }
+
+  async runSiteFollowUpTask(
+    session: AgentThreadSession,
+    goal: string,
+    inheritedSource?: string,
+  ): Promise<boolean> {
+    const inheritedSiteLabel = session.activeTaskRun?.finalUrl || inheritedSource;
+    session.planState.global_goal = goal;
+    session.planState.scratchpad = appendScratchpad(
+      session.planState.scratchpad,
+      inheritedSiteLabel
+        ? `Site follow-up for ${inheritedSiteLabel}`
+        : `Site follow-up task: ${goal}`,
+    );
+    this.events.emitAssistantMessage(session, {
+      id: `site-followup-${Date.now()}`,
+      role: 'assistant',
+      content: inheritedSiteLabel
+        ? `I will treat this as a follow-up operation on the previously deployed site (${inheritedSiteLabel}) and continue with domain, HTTPS, and SSL handling directly on the server.`
+        : 'I will treat this as an existing-site operation and inspect the current server, nginx, and certificate state before applying domain and HTTPS changes.',
+      timestamp: now(),
+    });
+    return this.runGenericTask(session, goal);
   }
 
   async executeRoute(session: AgentThreadSession, route: RouteHypothesis): Promise<RouteExecutionResult> {

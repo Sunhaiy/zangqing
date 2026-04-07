@@ -101,7 +101,6 @@ sshtool
 |  |- services/         # 前端服务层
 |  |- shared/           # 共享类型与语言资源
 |  `- store/            # Zustand 状态管理
-|- docs/                # 架构和设计文档
 `- .github/workflows/   # 构建与发布流程
 ```
 

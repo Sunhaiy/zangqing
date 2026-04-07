@@ -10,6 +10,27 @@ import { AgentThreadSession, AgentToolCallArgs, AgentToolDefinition } from './ty
 
 const execFile = promisify(execFileCallback);
 
+function isNotConnectedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /not connected/i.test(message);
+}
+
+async function withRemoteReconnect<T>(
+  sshMgr: SSHManager,
+  connectionId: string,
+  operation: () => Promise<T>,
+  onReconnect?: () => void,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isNotConnectedError(error)) throw error;
+    await sshMgr.reconnect(connectionId);
+    onReconnect?.();
+    return operation();
+  }
+}
+
 function stringify(value: unknown): string {
   if (typeof value === 'string') return value;
   return JSON.stringify(value, null, 2);
@@ -58,7 +79,12 @@ async function runLocalCommandWithTimeout(
   }
 }
 
-async function probeRemoteContext(sshMgr: SSHManager, connectionId: string, host: string) {
+async function probeRemoteContext(
+  sshMgr: SSHManager,
+  connectionId: string,
+  host: string,
+  onReconnect?: () => void,
+) {
   const script = [
     'USER_NAME=$(whoami 2>/dev/null || echo unknown)',
     'PWD_NOW=$(pwd 2>/dev/null || echo ~)',
@@ -67,7 +93,12 @@ async function probeRemoteContext(sshMgr: SSHManager, connectionId: string, host
     'DOCKER_STATUS=$(docker --version 2>/dev/null || echo missing)',
     'printf "USER:%s\\nPWD:%s\\nOS:%s\\nNODE:%s\\nDOCKER:%s\\n" "$USER_NAME" "$PWD_NOW" "$OS_NAME" "$NODE_VERSION" "$DOCKER_STATUS"',
   ].join('\n');
-  const result = await sshMgr.exec(connectionId, `sh -lc ${shQuote(script)}`, 20000);
+  const result = await withRemoteReconnect(
+    sshMgr,
+    connectionId,
+    () => sshMgr.exec(connectionId, `sh -lc ${shQuote(script)}`, 20000),
+    onReconnect,
+  );
   const lines = result.stdout.split('\n');
   const read = (prefix: string) => lines.find((line) => line.startsWith(prefix))?.slice(prefix.length).trim() || 'unknown';
   return {
@@ -103,6 +134,14 @@ export function createAgentToolRegistry(
   sshMgr: SSHManager,
   options: AgentToolRegistryOptions = {},
 ): AgentToolDefinition {
+  const emitReconnectNote = (session: AgentThreadSession) => {
+    if (session.webContents.isDestroyed()) return;
+    session.webContents.send('terminal-data', {
+      id: session.connectionId,
+      data: `\r\n\x1b[33m[Agent] SSH connection dropped. Auto-reconnected and retrying the remote action...\x1b[0m\r\n`,
+    });
+  };
+
   const definitions = [
     {
       type: 'function' as const,
@@ -467,7 +506,12 @@ export function createAgentToolRegistry(
             id: session.connectionId,
             data: `\r\n\x1b[36;2m[Agent] $ ${command}\x1b[0m\r\n`,
           });
-          const result = await sshMgr.exec(session.connectionId, wrapped, timeoutMs);
+          const result = await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.exec(session.connectionId, wrapped, timeoutMs),
+            () => emitReconnectNote(session),
+          );
           if (result.stdout) {
             session.webContents.send('terminal-data', {
               id: session.connectionId,
@@ -494,7 +538,12 @@ export function createAgentToolRegistry(
         }
         case 'remote_list_directory': {
           const targetPath = requireString(args, 'path');
-          const entries = await sshMgr.listFiles(session.connectionId, targetPath);
+          const entries = await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.listFiles(session.connectionId, targetPath),
+            () => emitReconnectNote(session),
+          );
           return {
             ok: true,
             displayCommand: `remote ls ${targetPath}`,
@@ -507,12 +556,22 @@ export function createAgentToolRegistry(
           const targetPath = requireString(args, 'path');
           let content: string;
           try {
-            content = await sshMgr.readFile(session.connectionId, targetPath);
-          } catch {
-            const fallback = await sshMgr.exec(
+            content = await withRemoteReconnect(
+              sshMgr,
               session.connectionId,
-              `sh -lc ${shQuote(`if [ -f ${shQuote(targetPath)} ]; then cat ${shQuote(targetPath)}; fi`)}`,
-              30000,
+              () => sshMgr.readFile(session.connectionId, targetPath),
+              () => emitReconnectNote(session),
+            );
+          } catch {
+            const fallback = await withRemoteReconnect(
+              sshMgr,
+              session.connectionId,
+              () => sshMgr.exec(
+                session.connectionId,
+                `sh -lc ${shQuote(`if [ -f ${shQuote(targetPath)} ]; then cat ${shQuote(targetPath)}; fi`)}`,
+                30000,
+              ),
+              () => emitReconnectNote(session),
             );
             content = fallback.stdout || '';
           }
@@ -527,7 +586,12 @@ export function createAgentToolRegistry(
         case 'remote_write_file': {
           const targetPath = requireString(args, 'path');
           const content = stringify(args.content ?? '');
-          await sshMgr.writeFile(session.connectionId, targetPath, content);
+          await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.writeFile(session.connectionId, targetPath, content),
+            () => emitReconnectNote(session),
+          );
           return {
             ok: true,
             displayCommand: `remote write ${targetPath}`,
@@ -546,9 +610,19 @@ export function createAgentToolRegistry(
           }
           if (createParentDirs) {
             const parentDir = path.posix.dirname(remotePath.replace(/\\/g, '/'));
-            await sshMgr.exec(session.connectionId, `sh -lc ${shQuote(`mkdir -p ${shQuote(parentDir)}`)}`, 30000);
+            await withRemoteReconnect(
+              sshMgr,
+              session.connectionId,
+              () => sshMgr.exec(session.connectionId, `sh -lc ${shQuote(`mkdir -p ${shQuote(parentDir)}`)}`, 30000),
+              () => emitReconnectNote(session),
+            );
           }
-          await sshMgr.uploadFile(session.connectionId, localPath, remotePath);
+          await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.uploadFile(session.connectionId, localPath, remotePath),
+            () => emitReconnectNote(session),
+          );
           return {
             ok: true,
             displayCommand: `upload ${localPath} -> ${remotePath}`,
@@ -561,7 +635,12 @@ export function createAgentToolRegistry(
           const remotePath = requireString(args, 'remotePath');
           const localPath = normalizeLocalPath(requireString(args, 'localPath'));
           await fs.mkdir(path.dirname(localPath), { recursive: true });
-          await sshMgr.downloadFile(session.connectionId, remotePath, localPath);
+          await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.downloadFile(session.connectionId, remotePath, localPath),
+            () => emitReconnectNote(session),
+          );
           return {
             ok: true,
             displayCommand: `download ${remotePath} -> ${localPath}`,
@@ -572,10 +651,15 @@ export function createAgentToolRegistry(
         }
         case 'http_probe': {
           const url = requireString(args, 'url');
-          const result = await sshMgr.exec(
+          const result = await withRemoteReconnect(
+            sshMgr,
             session.connectionId,
-            `sh -lc ${shQuote(`STATUS=$(curl -k -L -s -o /dev/null -w "%{http_code}" ${JSON.stringify(url)}); printf "%s" "$STATUS"`)}`,
-            20000,
+            () => sshMgr.exec(
+              session.connectionId,
+              `sh -lc ${shQuote(`STATUS=$(curl -k -L -s -o /dev/null -w "%{http_code}" ${JSON.stringify(url)}); printf "%s" "$STATUS"`)}`,
+              20000,
+            ),
+            () => emitReconnectNote(session),
           );
           const status = Number(result.stdout.trim().split(/\s+/).pop() || 0);
           return {
@@ -593,7 +677,12 @@ export function createAgentToolRegistry(
             'echo',
             `journalctl -u ${JSON.stringify(serviceName)} -n 80 --no-pager || true`,
           ].join('; ');
-          const result = await sshMgr.exec(session.connectionId, `sh -lc ${shQuote(command)}`, 30000);
+          const result = await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.exec(session.connectionId, `sh -lc ${shQuote(command)}`, 30000),
+            () => emitReconnectNote(session),
+          );
           return {
             ok: result.exitCode === 0,
             displayCommand: `inspect service ${serviceName}`,
@@ -605,10 +694,15 @@ export function createAgentToolRegistry(
         case 'service_control': {
           const serviceName = requireString(args, 'serviceName');
           const action = requireString(args, 'action');
-          const result = await sshMgr.exec(
+          const result = await withRemoteReconnect(
+            sshMgr,
             session.connectionId,
-            `PAGER=cat SYSTEMD_PAGER=cat sh -lc ${shQuote(`sudo systemctl ${action} ${JSON.stringify(serviceName)}`)}`,
-            30000,
+            () => sshMgr.exec(
+              session.connectionId,
+              `PAGER=cat SYSTEMD_PAGER=cat sh -lc ${shQuote(`sudo systemctl ${action} ${JSON.stringify(serviceName)}`)}`,
+              30000,
+            ),
+            () => emitReconnectNote(session),
           );
           return {
             ok: result.exitCode === 0,
@@ -713,10 +807,15 @@ export function createAgentToolRegistry(
           const cloneCommand = ref
             ? `rm -rf ${shQuote(targetDir)} && git clone --depth 1 --branch ${shQuote(ref)} ${shQuote(repoUrl)} ${shQuote(targetDir)}`
             : `rm -rf ${shQuote(targetDir)} && git clone --depth 1 ${shQuote(repoUrl)} ${shQuote(targetDir)}`;
-          const result = await sshMgr.exec(
+          const result = await withRemoteReconnect(
+            sshMgr,
             session.connectionId,
-            `sh -lc ${shQuote(`mkdir -p ${shQuote(path.posix.dirname(targetDir))} && ${cloneCommand}`)}`,
-            240000,
+            () => sshMgr.exec(
+              session.connectionId,
+              `sh -lc ${shQuote(`mkdir -p ${shQuote(path.posix.dirname(targetDir))} && ${cloneCommand}`)}`,
+              240000,
+            ),
+            () => emitReconnectNote(session),
           );
           return {
             ok: result.exitCode === 0,
@@ -734,7 +833,12 @@ export function createAgentToolRegistry(
             ref ? `git -C ${shQuote(targetDir)} checkout ${shQuote(ref)}` : '',
             ref ? `git -C ${shQuote(targetDir)} reset --hard ${shQuote(`origin/${ref}`)}` : '',
           ].filter(Boolean).join(' && ');
-          const result = await sshMgr.exec(session.connectionId, `sh -lc ${shQuote(command)}`, 120000);
+          const result = await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.exec(session.connectionId, `sh -lc ${shQuote(command)}`, 120000),
+            () => emitReconnectNote(session),
+          );
           return {
             ok: result.exitCode === 0,
             displayCommand: `git fetch ${targetDir}${ref ? ` @ ${ref}` : ''}`,

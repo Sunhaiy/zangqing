@@ -230,6 +230,7 @@ export function AgentLayout({
         : 'Conversation, planning, and execution happen here';
     const stageTitle = language === 'zh' ? '藏青' : 'Zangqing';
     const stageHint = language === 'zh' ? '实时终端与执行结果' : 'Live terminal and execution output';
+    const canvasTitle = host || (language === 'zh' ? '服务器' : 'Server');
 
     const planSteps = currentRuntime?.planState?.plan || [];
     const completedSteps = planSteps.filter((step) => step.status === 'completed' || step.status === 'skipped').length;
@@ -605,7 +606,7 @@ export function AgentLayout({
                                     <span className="h-2.5 w-2.5 rounded-full bg-emerald-300/85" />
                                 </div>
                                 <span className="text-sm font-medium text-foreground">
-                                    {language === 'zh' ? '执行画布' : 'Execution Canvas'}
+                                    {canvasTitle}
                                 </span>
                             </div>
                             <span className="text-xs text-muted-foreground">{stageHint}</span>

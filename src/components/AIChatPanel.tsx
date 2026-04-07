@@ -44,8 +44,14 @@ interface AIChatPanelProps {
 }
 
 const DEPLOY_INTENT_RE = /(?:\bdeploy\b|\bpublish\b|部署|发布|上线)/i;
-const LOCAL_PROJECT_PATH_RE = /[A-Za-z]:\\[^\r\n"'`<>|]+|\/(?:Users|home|opt|srv|var|tmp)[^\r\n"'`<>|]*/g;
+const LOCAL_PROJECT_PATH_RE = (() => {
+    const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
+    return isWindows
+        ? /(?:[A-Za-z]:\\|\\\\)[^\r\n"'`<>|,，。；：、]+(?: [^\r\n"'`<>|,，。；：、]+)*/g
+        : /\/(?:Users|home|opt|srv|var|tmp)[^\s\r\n"'`<>|,，。；：、]*/g;
+})();
 const CONTINUE_INTENT_RE = /^(继续|继续处理|继续执行|继续部署|接着|接着做|再试一次|重试|continue|resume|retry)\s*[。.!！]?$/i;
+const OPTION_SELECTION_RE = /^(?:[ab]|[12]|option\s*[ab12]|方案\s*[ab]|选\s*[ab12])$/i;
 
 function extractDeployProjectPath(input: string): string | null {
     const matches = input.match(LOCAL_PROJECT_PATH_RE);
@@ -725,7 +731,7 @@ export function AIChatPanel({
     const handleSend = async () => {
         if (!input.trim() || isLoading) return;
         const trimmedInput = input.trim();
-        const isContinueMessage = CONTINUE_INTENT_RE.test(trimmedInput);
+        const isContinueMessage = CONTINUE_INTENT_RE.test(trimmedInput) || OPTION_SELECTION_RE.test(trimmedInput);
 
         if (!aiService.isConfigured()) {
             const errorMsg: AgentMessage = {
@@ -897,196 +903,6 @@ export function AIChatPanel({
                 <div ref={messagesEndRef} />
                 </div>
             </div>
-
-            {/* 鈹€鈹€ Plan Card (plan mode v2) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
-            {planMode && planStatus !== 'idle' && (
-                <div className="mx-auto w-full max-w-5xl px-5 pb-3">
-                    <div
-                        className="overflow-hidden rounded-lg border border-border bg-background"
-                        style={{ animation: 'agentSlideInUp 0.22s ease-out' }}
-                    >
-                        {/* 鈹€鈹€ Header bar 鈹€鈹€ */}
-                        <div className={cn(
-                            "flex cursor-pointer select-none items-center gap-2 border-b border-border px-4 py-2.5",
-                            planStatus === 'paused' ? "bg-yellow-500/8" : planStatus === 'waiting_approval' ? "bg-yellow-500/12" : "bg-muted/30",
-                        )} onClick={() => setPlanCollapsed(v => !v)}>
-                            <ListChecks className="w-3.5 h-3.5 text-primary/60 flex-shrink-0" />
-                                    <span className="text-[11px] font-semibold text-foreground/60 tracking-wide">执行计划</span>
-                            {planStatus === 'generating' && (
-                                <Loader2 className="w-3 h-3 text-primary/50 animate-spin ml-auto" />
-                            )}
-                            {planState && planStatus === 'executing' && (
-                                <span className="ml-auto text-[10px] text-muted-foreground/60 font-mono tabular-nums">
-                                    {planState.plan.filter(s => s.status === 'completed' || s.status === 'skipped').length}
-                                    <span className="opacity-40">/</span>
-                                    {planState.plan.length}
-                                </span>
-                            )}
-                            {planStatus === 'done' && (
-                                <CheckCircle2 className="w-3.5 h-3.5 text-green-400 ml-auto" />
-                            )}
-                            {planStatus === 'stopped' && (
-                                            <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground/50">
-                                                <Square className="w-2.5 h-2.5" />
-                                                已停止
-                                            </span>
-                            )}
-                            {planStatus === 'paused' && (
-                                <span className="ml-auto flex items-center gap-1 text-[10px] text-yellow-500/80">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-500/70 animate-pulse" />
-                                            等待你的回复
-                                </span>
-                            )}
-                            {planStatus === 'waiting_approval' && (
-                                <span className="ml-auto flex items-center gap-1.5 text-[10px] text-yellow-500 font-medium">
-                                    <AlertTriangle className="w-3.5 h-3.5 animate-pulse" />
-                                    需要你批准高风险操作
-                                </span>
-                            )}
-                            <span className="shrink-0 ml-1 text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors">
-                                {planCollapsed
-                                    ? <ChevronUp className="w-3 h-3" />
-                                    : <ChevronDown className="w-3 h-3" />
-                                }
-                            </span>
-                        </div>
-
-                        {/* 鈹€鈹€ Body (collapsible) 鈹€鈹€ */}
-                        {!planCollapsed && (<>
-                        {/* 鈹€鈹€ Generating skeleton 鈹€鈹€ */}
-                        {planStatus === 'generating' && !planState && (
-                            <div className="px-3 py-2.5 space-y-1.5">
-                                {[80, 60, 70].map((w, i) => (
-                                    <div key={i} className="relative h-2 rounded-full overflow-hidden bg-muted/30" style={{ width: `${w}%` }}>
-                                        <div className="absolute inset-0 rounded-full" style={{
-                                            background: 'linear-gradient(90deg, transparent 0%, hsl(var(--primary)/0.25) 50%, transparent 100%)',
-                                            animation: `agentShimmer 1.4s ease-in-out ${i * 0.2}s infinite`
-                                        }} />
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-
-                        {/* 鈹€鈹€ Goal 鈹€鈹€ */}
-                        {planState && (
-                            <div className="flex items-start gap-2 px-3 py-2 border-b border-border/10">
-                                <Target className="w-3 h-3 text-muted-foreground/40 flex-shrink-0 mt-0.5" />
-                                <span className="text-[11px] text-foreground/65 leading-snug">{planState.global_goal}</span>
-                            </div>
-                        )}
-
-                        {/* 鈹€鈹€ Steps list 鈹€鈹€ */}
-                        {planState && (
-                            <div className="divide-y divide-border/10">
-                                {planState.plan.map((step) => {
-                                    const isCompleted = step.status === 'completed';
-                                    const isFailed = step.status === 'failed';
-                                    const isSkipped = step.status === 'skipped';
-                                    // in_progress but stopped 鈫?treat visually as interrupted
-                                    const isStopped = step.status === 'in_progress' && planStatus === 'stopped';
-                                    const isPaused = step.status === 'in_progress' && planStatus === 'paused';
-                                    const isWaitingApproval = step.status === 'in_progress' && planStatus === 'waiting_approval';
-                                    const isActive = step.status === 'in_progress' && planStatus === 'executing';
-                                    const StepIcon = isCompleted ? CheckCircle2 : isFailed ? XCircle : isWaitingApproval ? AlertTriangle : (isActive || isPaused) ? Loader2 : isStopped ? Square : Circle;
-                                    const accentColor = isCompleted ? '#10b981' : isFailed ? '#ef4444' : isWaitingApproval ? '#eab308' : isActive ? 'hsl(var(--primary))' : isPaused ? '#eab308' : 'transparent';
-                                    return (
-                                        <div key={step.id} className={cn(
-                                            "relative flex items-start gap-2 pl-4 pr-3 py-2 text-[11px] transition-colors",
-                                            isActive && "bg-primary/5",
-                                            isPaused && "bg-yellow-500/5",
-                                            isWaitingApproval && "bg-yellow-500/8",
-                                        )}>
-                                            {/* Left accent strip */}
-                                            <div
-                                                className="absolute left-0 top-0 bottom-0 w-0.5"
-                                                style={{ backgroundColor: accentColor }}
-                                            />
-                                            {/* Status icon */}
-                                            <StepIcon className={cn(
-                                                "w-3.5 h-3.5 flex-shrink-0 mt-0.5",
-                                                isCompleted && "text-green-400",
-                                                isFailed && "text-red-400",
-                                                isActive && "text-primary animate-spin",
-                                                isPaused && "text-yellow-500/70 animate-pulse",
-                                                isWaitingApproval && "text-yellow-500 animate-pulse",
-                                                isStopped && "text-muted-foreground/30",
-                                                isSkipped && "text-muted-foreground/25",
-                                                step.status === 'pending' && "text-muted-foreground/25",
-                                            )} />
-                                            <div className="flex-1 min-w-0">
-                                                {/* Step description */}
-                                                <span className={cn("leading-snug",
-                                                    isCompleted && "text-muted-foreground/50 line-through",
-                                                    isActive && "text-foreground font-medium",
-                                                    isPaused && "text-yellow-500/70 font-medium",
-                                                    isStopped && "text-muted-foreground/40",
-                                                    isFailed && "text-red-400/70",
-                                                    isSkipped && "text-muted-foreground/35 line-through",
-                                                    step.status === 'pending' && "text-muted-foreground/55",
-                                                )}>{step.description}</span>
-                                                {/* Command preview */}
-                                                {step.command && (isActive || isCompleted || isFailed || isStopped) && (
-                                                    <div className="flex items-center gap-1 mt-0.5 overflow-hidden">
-                                                        <Terminal className="w-2.5 h-2.5 text-muted-foreground/30 shrink-0" />
-                                                        <code className="text-[10px] font-mono text-muted-foreground/35 truncate">{step.command}</code>
-                                                    </div>
-                                                )}
-                                                {/* Result / error note */}
-                                                {isCompleted && step.result && (
-                                                    <p className="text-[10px] text-green-400/55 mt-0.5 leading-snug">{step.result}</p>
-                                                )}
-                                                {isFailed && step.error && (
-                                                    <p className="text-[10px] text-red-400/55 mt-0.5 leading-snug">{step.error}</p>
-                                                )}
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-
-                        {/* 鈹€鈹€ Scratchpad (accumulated knowledge) 鈹€鈹€ */}
-                        {planState?.scratchpad && (
-                            <div className="flex items-start gap-1.5 px-3 py-2 border-t border-border/10">
-                                <Brain className="w-2.5 h-2.5 text-muted-foreground/30 flex-shrink-0 mt-0.5" />
-                                <p className="text-[10px] font-mono text-muted-foreground/35 leading-relaxed whitespace-pre-wrap">{planState.scratchpad}</p>
-                            </div>
-                        )}
-
-                        {/* 鈹€鈹€ Paused: reply hint 鈹€鈹€ */}
-                        {planStatus === 'paused' && (
-                            <div className="flex items-center gap-1.5 px-3 py-2 border-t border-yellow-500/15 bg-yellow-500/5">
-                                <ChevronRight className="w-3 h-3 text-yellow-500/60 flex-shrink-0" />
-                                    <span className="text-[10px] text-yellow-500/70">在下方输入框回复后，计划会自动继续。</span>
-                            </div>
-                        )}
-
-                        {/* 鈹€鈹€ Waiting approval: confirm hint 鈹€鈹€ */}
-                        {planStatus === 'waiting_approval' && (
-                            <div className="flex items-center gap-1.5 px-3 py-2 border-t border-yellow-500/20 bg-yellow-500/8">
-                                <ShieldAlert className="w-3 h-3 text-yellow-500/70 flex-shrink-0" />
-                                <span className="text-[10px] text-yellow-500/80">回复“确认执行”继续，或输入其他内容跳过这一步。</span>
-                            </div>
-                        )}
-
-                        {/* 鈹€鈹€ Progress bar (executing only) 鈹€鈹€ */}
-                        {planState && (planStatus === 'executing' || planStatus === 'stopped') && (
-                            <div className="h-0.5 bg-muted/20 overflow-hidden">
-                                <div
-                                    className={cn("h-full transition-all duration-700", planStatus === 'stopped' ? "bg-muted-foreground/20" : "bg-primary/40")}
-                                    style={{
-                                        width: `${Math.round(
-                                            (planState.plan.filter(s => s.status === 'completed' || s.status === 'skipped').length
-                                                / planState.plan.length) * 100
-                                        )}%`
-                                    }}
-                                />
-                            </div>
-                        )}
-                        </>)}
-                    </div>
-                </div>
-            )}
 
             {/* Pending approval bar */}
             {pendingCommands.length > 0 && (

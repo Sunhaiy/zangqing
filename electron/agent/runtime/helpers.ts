@@ -4,32 +4,39 @@ import type { PlanState } from '../../../src/shared/aiTypes.js';
 import type { AgentPlanPhase, TaskRunSummary } from '../../../src/shared/types.js';
 import type { AgentArtifact } from '../types.js';
 
-export const CONTINUE_INTENT_RE = /^(继续|继续处理|继续执行|继续部署|接着|接着做|再试一次|重试|continue|resume|retry)\s*[,，。！？.!?:;；：]*$/i;
-export const LOCAL_PROJECT_PATH_RE = /[A-Za-z]:\\[^\r\n"'`<>|]+|\/(?:Users|home|opt|srv|var|tmp)[^\r\n"'`<>|]*/g;
+const WINDOWS_LOCAL_PROJECT_PATH_RE = /(?:[A-Za-z]:\\|\\\\)[^\r\n"'`<>|,，。；：、]+(?: [^\r\n"'`<>|,，。；：、]+)*/g;
+const POSIX_LOCAL_PROJECT_PATH_RE = /\/(?:Users|home|opt|srv|var|tmp)[^\s\r\n"'`<>|,，。；：、]*/g;
+
+export const CONTINUE_INTENT_RE = /^(?:continue|resume|retry|go on|keep going|继续|继续处理|继续执行|继续部署|接着|接着做|再试一次|重试)\s*[,，。！!?:;；：]*$/i;
+export const STATUS_QUERY_RE = /^(?:status|what are you doing|what's the current status|what is the current status|你现在在干什么|现在在干什么|当前在做什么|当前进度|什么进度|啥进度)\s*[?？!！]*$/i;
+export const OPTION_SELECTION_RE = /^(?:[ab]|[12]|option\s*[ab12]|方案\s*[ab]|选\s*[ab12])$/i;
+export const LOCAL_PROJECT_PATH_RE = process.platform === 'win32'
+  ? WINDOWS_LOCAL_PROJECT_PATH_RE
+  : POSIX_LOCAL_PROJECT_PATH_RE;
 export const GITHUB_PROJECT_URL_RE = /https?:\/\/github\.com\/[^\s"'`<>]+/ig;
 export const MAX_GENERIC_TURNS = 32;
 export const MAX_AUTONOMOUS_REPAIRS = 5;
 
 const TOOL_LABELS: Record<string, string> = {
-  local_list_directory: '检查本地目录',
-  local_read_file: '读取本地文件',
-  local_write_file: '写入本地文件',
-  local_exec: '执行本地命令',
-  remote_exec: '执行远程命令',
-  remote_list_directory: '检查远程目录',
-  remote_read_file: '读取远程文件',
-  remote_write_file: '写入远程文件',
-  remote_upload_file: '上传文件到远程',
-  remote_download_file: '下载远程文件',
-  http_probe: '探测 HTTP 地址',
-  service_inspect: '检查服务状态',
-  service_control: '控制服务',
-  task_create: '创建子任务',
-  agent_fork: '启动子代理',
-  todo_write: '更新任务清单',
-  todo_read: '读取任务清单',
-  git_clone_remote: '远程克隆仓库',
-  git_fetch_remote: '远程更新仓库',
+  local_list_directory: 'Inspect local directory',
+  local_read_file: 'Read local file',
+  local_write_file: 'Write local file',
+  local_exec: 'Run local command',
+  remote_exec: 'Run remote command',
+  remote_list_directory: 'Inspect remote directory',
+  remote_read_file: 'Read remote file',
+  remote_write_file: 'Write remote file',
+  remote_upload_file: 'Upload file',
+  remote_download_file: 'Download file',
+  http_probe: 'Probe HTTP endpoint',
+  service_inspect: 'Inspect service',
+  service_control: 'Control service',
+  task_create: 'Create child task',
+  agent_fork: 'Fork child agent',
+  todo_write: 'Update todo list',
+  todo_read: 'Read todo list',
+  git_clone_remote: 'Clone remote repository',
+  git_fetch_remote: 'Fetch remote repository',
 };
 
 export function now() {
@@ -63,6 +70,24 @@ export function safeParseArgs(raw: string): Record<string, unknown> {
 
 export function isContinueIntent(input: string) {
   return CONTINUE_INTENT_RE.test(input.trim());
+}
+
+export function isStatusQuery(input: string) {
+  return STATUS_QUERY_RE.test(input.trim());
+}
+
+export function isOptionSelection(input: string) {
+  return OPTION_SELECTION_RE.test(input.trim());
+}
+
+export function looksLikeSiteFollowUpGoal(input: string) {
+  const lowered = input.toLowerCase();
+  return (
+    /\bhttps?:\/\/[^\s"'`<>]+/.test(lowered)
+    || /\b[a-z0-9.-]+\.[a-z]{2,}\b/.test(lowered)
+    || /\b(?:https|ssl|certbot|certificate|tls|domain|dns|nginx|server_name|proxy_pass)\b/.test(lowered)
+    || /域名|证书|续签|网站|站点|解析|nginx|https|ssl|dns/.test(input)
+  );
 }
 
 export function cleanDeployCandidate(input: string) {

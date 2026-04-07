@@ -70,6 +70,7 @@ function buildToolDisciplinePrompt() {
     'Prefer repository-native routes first: docker compose, Dockerfile, then language-native runtime routes.',
     'When a route fails, decide whether the route is wrong or the environment is incomplete. Repair the current route when possible; switch routes only when evidence disproves the current one.',
     'For GitHub deployment tasks, work directly on the remote server: clone or fetch the repository remotely, inspect it there, and deploy from that remote checkout.',
+    'If the user later asks to bind a domain, enable HTTPS, configure Certbot, or renew SSL for a site that was just deployed in this conversation, treat it as a follow-up on the last successfully deployed site unless the user explicitly names a different project.',
     'Use task_create for meaningful subproblems that should be tracked separately.',
     'Use agent_fork for scoped investigations or bounded subproblems when parallel reasoning or focused diagnosis would help.',
     'When you believe the deployment is complete, finish with a concise summary that includes a line in the form FINAL_URL: https://... or FINAL_URL: http://ip:port after a successful http_probe.',

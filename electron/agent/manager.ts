@@ -6,6 +6,7 @@ import type { AgentRuntimeMessage } from './types.js';
 import { AgentEventBus } from './runtime/eventBus.js';
 import { AgentSessionStore } from './state/sessionStore.js';
 import { AgentQueryRuntime } from './runtime/queryRuntime.js';
+import { isStatusQuery, now } from './runtime/helpers.js';
 
 interface StartAgentInput {
   sessionId: string;
@@ -91,6 +92,30 @@ export class AgentManager {
     const session = await this.store.ensureSession(sessionId, options);
     session.webContents = options.webContents;
     session.profile = options.profile;
+
+    if (isStatusQuery(options.goal) && session.activeTaskRun && !session.running) {
+      const run = session.activeTaskRun;
+      const route = run.activeHypothesisId
+        ? run.hypotheses.find((item) => item.id === run.activeHypothesisId)?.kind
+        : undefined;
+      const recentFailure = run.failureHistory[run.failureHistory.length - 1];
+      const lines = [
+        `Current task: ${run.goal}`,
+        `Phase: ${run.phase} / Status: ${run.status}`,
+        route ? `Current route: ${route}` : '',
+        run.currentAction ? `Current action: ${run.currentAction}` : '',
+        recentFailure ? `Recent failure: ${recentFailure.failureClass}: ${recentFailure.message}` : '',
+        run.checkpoint.nextAction ? `Next step: ${run.checkpoint.nextAction}` : '',
+      ].filter(Boolean);
+      this.events.emitAssistantMessage(session, {
+        id: `task-status-${Date.now()}`,
+        role: 'assistant',
+        content: lines.join('\n'),
+        timestamp: now(),
+      });
+      return;
+    }
+
     const runtime = this.getRuntime(sessionId);
     await runtime.run(session, {
       goal: options.goal,
