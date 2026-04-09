@@ -68,11 +68,20 @@ export class AgentQueryEngine {
     goal: string,
     options: AgentTaskRunOptions,
   ): Promise<boolean> {
+    const activeRunMode = session.activeTaskRun?.mode;
     const siteFollowUpGoal = looksLikeSiteFollowUpGoal(goal);
     const continuingRun =
       options.resumeRequested &&
       Boolean(session.activeTaskRun) &&
       !['completed', 'failed'].includes(session.activeTaskRun?.status || '');
+
+    if (continuingRun && activeRunMode && activeRunMode !== 'project') {
+      return this.runGenericTask(session, goal, {
+        continuingRun: true,
+        sourceLabel: session.activeTaskRun?.source?.label,
+        mode: activeRunMode,
+      });
+    }
 
     const sourceLabel = continuingRun
       ? session.activeTaskRun?.source?.label || await this.store.resolveDeploySource(session, goal)
@@ -94,23 +103,69 @@ export class AgentQueryEngine {
     return this.runGenericTask(session, goal);
   }
 
-  async runGenericTask(session: AgentThreadSession, goal: string): Promise<boolean> {
+  async runGenericTask(
+    session: AgentThreadSession,
+    goal: string,
+    options?: {
+      continuingRun?: boolean;
+      sourceLabel?: string;
+      mode?: 'generic' | 'site-followup';
+    },
+  ): Promise<boolean> {
     session.planState.global_goal = goal;
     session.planState.scratchpad = appendScratchpad(session.planState.scratchpad, `Goal: ${goal}`);
     this.events.emitPlanUpdate(session, 'generating');
+
+    const continuingRun = Boolean(options?.continuingRun && session.activeTaskRun);
+    if (!continuingRun) {
+      const run = this.store.createGenericTaskRun(goal, {
+        mode: options?.mode || 'generic',
+        sourceLabel: options?.sourceLabel,
+        currentAction: options?.mode === 'site-followup'
+          ? 'Inspecting the current site, nginx, and certificate state'
+          : 'Understanding the goal and deciding the next action',
+        nextAction: 'Inspect the current state and continue execution',
+      });
+      this.store.attachTaskRun(session, run);
+      session.recentHttpProbes = [];
+      session.lastToolFailure = undefined;
+    } else if (session.activeTaskRun) {
+      this.store.upsertTaskRun(session, {
+        status: 'running',
+        phase: 'act',
+        currentAction: options?.mode === 'site-followup'
+          ? 'Resuming the site follow-up task'
+          : 'Resuming the current task',
+      }, {
+        phase: 'act',
+        nextAction: 'Continue from the preserved task state',
+      });
+    }
 
     let completed = false;
     try {
       while (!session.aborted && session.turnCounter < MAX_GENERIC_TURNS) {
         session.turnCounter += 1;
         await this.compactService.maybeCompact(session);
+        if (session.activeTaskRun) {
+          this.store.upsertTaskRun(session, {
+            status: 'running',
+            phase: 'act',
+            currentAction: options?.mode === 'site-followup'
+              ? 'Inspecting and updating the current site configuration'
+              : 'Thinking, inspecting facts, and deciding the next action',
+          }, {
+            phase: 'act',
+            nextAction: 'Continue the current task loop',
+          });
+        }
         this.events.emitPlanUpdate(session, 'executing');
 
         const response = await this.callLLMWithRetries(session);
         this.store.updateContextWindow(session, response.usage);
+        const text = response.content?.trim() || '';
 
-        if (response.content?.trim()) {
-          const text = response.content.trim();
+        if (text) {
           this.events.emitAssistantMessage(session, {
             id: `assistant-${Date.now()}`,
             role: 'assistant',
@@ -125,6 +180,18 @@ export class AgentQueryEngine {
         }
 
         if (!response.toolCalls?.length) {
+          if (session.activeTaskRun) {
+            const verifiedUrl = this.store.detectVerifiedUrl(session, text);
+            this.store.upsertTaskRun(session, {
+              status: 'completed',
+              phase: 'complete',
+              finalUrl: verifiedUrl,
+              currentAction: 'The task finished and produced a final answer.',
+            }, {
+              phase: 'complete',
+              nextAction: undefined,
+            });
+          }
           completed = true;
           return true;
         }
@@ -139,6 +206,16 @@ export class AgentQueryEngine {
       }
 
       const limitMessage = 'The current task reached the autonomous turn budget. Context is preserved, and you can ask me to continue.';
+      if (session.activeTaskRun) {
+        this.store.upsertTaskRun(session, {
+          status: 'paused',
+          phase: 'paused',
+          currentAction: limitMessage,
+        }, {
+          phase: 'paused',
+          nextAction: 'Send continue to resume the same task',
+        });
+      }
       this.store.historyPush(session, { role: 'assistant', content: limitMessage });
       this.events.emitAssistantMessage(session, {
         id: `limit-${Date.now()}`,
@@ -148,8 +225,49 @@ export class AgentQueryEngine {
         isError: true,
       });
       return true;
+    } catch (error: any) {
+      const failureClass = this.store.classifyAutonomousFailure(undefined, error?.message || String(error));
+      const failure: TaskRunFailure = {
+        attempt: Math.max((session.activeTaskRun?.attemptCount || 0) + 1, 1),
+        routeId: session.activeTaskRun?.activeHypothesisId,
+        failureClass,
+        message: error?.message || String(error),
+        timestamp: now(),
+      };
+      if (session.activeTaskRun) {
+        this.store.upsertTaskRun(session, {
+          status: failureClass === 'llm_overloaded' ? 'retryable_paused' : 'failed',
+          phase: failureClass === 'llm_overloaded' ? 'paused' : 'failed',
+          attemptCount: failure.attempt,
+          failureHistory: [...(session.activeTaskRun.failureHistory || []), failure].slice(-20),
+          currentAction: this.store.failureText(failure, true),
+        }, {
+          phase: failureClass === 'llm_overloaded' ? 'paused' : 'failed',
+          attemptCount: failure.attempt,
+          nextAction: failureClass === 'llm_overloaded' ? 'Send continue to resume the same task' : undefined,
+        });
+      }
+      const failureText = this.store.failureText(failure, true);
+      this.store.historyPush(session, { role: 'assistant', content: failureText });
+      this.events.emitAssistantMessage(session, {
+        id: `generic-task-error-${Date.now()}`,
+        role: 'assistant',
+        content: failureText,
+        timestamp: now(),
+        isError: true,
+      });
+      return true;
     } finally {
-      this.events.emitPlanUpdate(session, session.aborted ? 'stopped' : completed ? 'done' : 'stopped');
+      this.events.emitPlanUpdate(
+        session,
+        session.activeTaskRun
+          ? phaseToPlanStatus(session.activeTaskRun)
+          : session.aborted
+            ? 'stopped'
+            : completed
+              ? 'done'
+              : 'stopped',
+      );
     }
   }
 
@@ -174,7 +292,10 @@ export class AgentQueryEngine {
         : 'I will treat this as an existing-site operation and inspect the current server, nginx, and certificate state before applying domain and HTTPS changes.',
       timestamp: now(),
     });
-    return this.runGenericTask(session, goal);
+    return this.runGenericTask(session, goal, {
+      mode: 'site-followup',
+      sourceLabel: inheritedSource,
+    });
   }
 
   async executeRoute(session: AgentThreadSession, route: RouteHypothesis): Promise<RouteExecutionResult> {

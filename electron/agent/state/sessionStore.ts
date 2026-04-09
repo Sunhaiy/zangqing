@@ -121,6 +121,8 @@ export class AgentSessionStore {
       activeTaskRun: restored?.activeTaskRun
         ? {
             ...restored.activeTaskRun,
+            mode: restored.activeTaskRun.mode
+              || (restored.activeTaskRun.source ? 'project' : 'generic'),
             childRuns: restored.activeTaskRun.childRuns || [],
             taskTodos: restored.activeTaskRun.taskTodos || restored?.taskTodos || this.createDefaultTodos(),
           }
@@ -293,6 +295,7 @@ export class AgentSessionStore {
     return {
       id: buildTaskRunId(),
       goal,
+      mode: 'project',
       status: 'running',
       phase: 'understand',
       source: {
@@ -313,6 +316,47 @@ export class AgentSessionStore {
       currentAction: /^https?:\/\/github\.com\//i.test(sourceLabel)
         ? "Analyzing GitHub repository on the remote server"
         : "Analyzing local project files and entry points",
+      createdAt,
+      updatedAt: createdAt,
+    };
+  }
+
+  createGenericTaskRun(
+    goal: string,
+    options?: {
+      mode?: 'generic' | 'site-followup';
+      sourceLabel?: string;
+      currentAction?: string;
+      nextAction?: string;
+    },
+  ): TaskRunSummary {
+    const createdAt = now();
+    const taskTodos = this.createDefaultTodos();
+    return {
+      id: buildTaskRunId(),
+      goal,
+      mode: options?.mode || 'generic',
+      status: 'running',
+      phase: 'act',
+      source: options?.sourceLabel
+        ? {
+            type: /^https?:\/\/github\.com\//i.test(options.sourceLabel) ? 'github' : 'local',
+            label: options.sourceLabel,
+          }
+        : undefined,
+      hypotheses: [],
+      attemptCount: 0,
+      failureHistory: [],
+      checkpoint: {
+        phase: 'act',
+        completedActions: [],
+        knownFacts: [],
+        attemptCount: 0,
+        nextAction: options?.nextAction,
+      },
+      taskTodos,
+      childRuns: [],
+      currentAction: options?.currentAction || 'Working on the current task',
       createdAt,
       updatedAt: createdAt,
     };

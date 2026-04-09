@@ -52,6 +52,7 @@ const LOCAL_PROJECT_PATH_RE = (() => {
 })();
 const CONTINUE_INTENT_RE = /^(继续|继续处理|继续执行|继续部署|接着|接着做|再试一次|重试|continue|resume|retry)\s*[。.!！]?$/i;
 const OPTION_SELECTION_RE = /^(?:[ab]|[12]|option\s*[ab12]|方案\s*[ab]|选\s*[ab12])$/i;
+const STATUS_QUERY_RE = /^(?:status|what are you doing|what's the current status|what is the current status|你现在在干什么|现在在做什么|当前在做什么|当前进度|什么进度|啥进度)\s*[?？!！]*$/i;
 
 function extractDeployProjectPath(input: string): string | null {
     const matches = input.match(LOCAL_PROJECT_PATH_RE);
@@ -732,6 +733,7 @@ export function AIChatPanel({
         if (!input.trim() || isLoading) return;
         const trimmedInput = input.trim();
         const isContinueMessage = CONTINUE_INTENT_RE.test(trimmedInput) || OPTION_SELECTION_RE.test(trimmedInput);
+        const isStatusMessage = STATUS_QUERY_RE.test(trimmedInput);
 
         if (!aiService.isConfigured()) {
             const errorMsg: AgentMessage = {
@@ -756,10 +758,14 @@ export function AIChatPanel({
         setInput('');
 
         // Reset plan state for a new goal, but preserve it when the user is continuing the same run.
+        const hasResumableRun = Boolean(activeTaskRun && !['completed', 'failed'].includes(activeTaskRun.status));
         const isResuming = planMode
+            && hasResumableRun
             && (
-                ((planStatus === 'paused' || planStatus === 'waiting_approval') && planStateRef.current !== null)
-                || (planStatus === 'stopped' && isContinueMessage && (planStateRef.current !== null || messages.length > 0))
+                isContinueMessage
+                || isStatusMessage
+                || ((planStatus === 'paused' || planStatus === 'waiting_approval') && planStateRef.current !== null)
+                || (planStatus === 'stopped' && (planStateRef.current !== null || messages.length > 0))
             );
         if (!isResuming) {
             setPlanState(null);

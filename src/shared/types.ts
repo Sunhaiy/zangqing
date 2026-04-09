@@ -118,6 +118,8 @@ export type TaskRunPhase =
   | 'failed'
   | 'paused';
 
+export type TaskRunMode = 'project' | 'generic' | 'site-followup';
+
 export interface RouteHypothesis {
   id: string;
   kind: RouteHypothesisKind;
@@ -166,6 +168,7 @@ export interface RunCheckpoint {
 export interface TaskRunSummary {
   id: string;
   goal: string;
+  mode: TaskRunMode;
   status: TaskRunStatus;
   phase: TaskRunPhase;
   source?: {
