@@ -17,8 +17,43 @@ interface TranscriptEntry {
     status: string;
     route?: string;
     currentAction?: string;
-      finalUrl?: string;
+    finalUrl?: string;
+    attemptCount?: number;
+    blockingReason?: string;
+    autoRetryCount?: number;
+    nextAutoRetryAt?: number;
+    lastProgressAt?: number;
+    checkpointReplayCount?: number;
+    watchdogState?: string;
+    watchdogAlerts?: number;
+    selfCheckCount?: number;
+    lastSelfCheckAt?: number;
+    longRangePlan?: string[];
+    strategyHistory?: Array<{
+      action: string;
+      summary: string;
+      reason: string;
+      routeId?: string;
+      targetRouteId?: string;
+      timestamp: number;
+    }>;
+    checkpoint?: {
+      nextAction?: string;
+      knownFacts?: string[];
+      completedActions?: string[];
+      attemptCount?: number;
+      lastProgressAt?: number;
+      lastProgressNote?: string;
+      progressSignature?: string;
+      lastToolName?: string;
+      lastToolStatus?: 'success' | 'failure';
+      lastToolAt?: number;
+      stagnationCount?: number;
+      replayCount?: number;
+      lastReplayAt?: number;
+      lastReplayReason?: string;
     };
+  };
   progress?: {
     runId?: string;
     content: string;
@@ -87,6 +122,41 @@ export class AgentTranscriptStore {
         route,
         currentAction: taskRun.currentAction ? clip(taskRun.currentAction, 800) : undefined,
         finalUrl: taskRun.finalUrl,
+        attemptCount: taskRun.attemptCount,
+        blockingReason: taskRun.blockingReason ? clip(taskRun.blockingReason, 500) : undefined,
+        autoRetryCount: taskRun.autoRetryCount,
+        nextAutoRetryAt: taskRun.nextAutoRetryAt,
+        lastProgressAt: taskRun.lastProgressAt,
+        checkpointReplayCount: taskRun.checkpointReplayCount,
+        watchdogState: taskRun.watchdogState,
+        watchdogAlerts: taskRun.watchdogAlerts,
+        selfCheckCount: taskRun.selfCheckCount,
+        lastSelfCheckAt: taskRun.lastSelfCheckAt,
+        longRangePlan: taskRun.longRangePlan.slice(0, 6).map((item) => clip(item, 220)),
+        strategyHistory: taskRun.strategyHistory.slice(-6).map((item) => ({
+          action: item.action,
+          summary: clip(item.summary, 220),
+          reason: clip(item.reason, 320),
+          routeId: item.routeId,
+          targetRouteId: item.targetRouteId,
+          timestamp: item.timestamp,
+        })),
+        checkpoint: {
+          nextAction: taskRun.checkpoint.nextAction ? clip(taskRun.checkpoint.nextAction, 800) : undefined,
+          knownFacts: taskRun.checkpoint.knownFacts.slice(-12).map((item) => clip(item, 240)),
+          completedActions: taskRun.checkpoint.completedActions.slice(-20),
+          attemptCount: taskRun.checkpoint.attemptCount,
+          lastProgressAt: taskRun.checkpoint.lastProgressAt,
+          lastProgressNote: taskRun.checkpoint.lastProgressNote ? clip(taskRun.checkpoint.lastProgressNote, 800) : undefined,
+          progressSignature: taskRun.checkpoint.progressSignature ? clip(taskRun.checkpoint.progressSignature, 400) : undefined,
+          lastToolName: taskRun.checkpoint.lastToolName,
+          lastToolStatus: taskRun.checkpoint.lastToolStatus,
+          lastToolAt: taskRun.checkpoint.lastToolAt,
+          stagnationCount: taskRun.checkpoint.stagnationCount,
+          replayCount: taskRun.checkpoint.replayCount,
+          lastReplayAt: taskRun.checkpoint.lastReplayAt,
+          lastReplayReason: taskRun.checkpoint.lastReplayReason ? clip(taskRun.checkpoint.lastReplayReason, 400) : undefined,
+        },
       },
     };
     return this.appendEntry(sessionId, entry);
@@ -165,6 +235,80 @@ export class AgentTranscriptStore {
         .map((entry) => entry.progress?.content || '');
     } catch {
       return [];
+    }
+  }
+
+  async loadLatestTaskSnapshot(sessionId: string): Promise<Partial<TaskRunSummary> | null> {
+    const targetPath = this.transcriptPath(sessionId);
+    try {
+      const content = await fs.readFile(targetPath, 'utf8');
+      const lines = content.split(/\r?\n/).filter(Boolean).slice(-600);
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        try {
+          const entry = JSON.parse(lines[index] || '') as TranscriptEntry;
+          if (entry.kind !== 'task' || !entry.task?.id || !entry.task.goal) continue;
+          const checkpoint = entry.task.checkpoint || {};
+          return {
+            id: entry.task.id,
+            goal: entry.task.goal,
+            mode: 'generic',
+            status: entry.task.status as TaskRunSummary['status'],
+            phase: entry.task.phase as TaskRunSummary['phase'],
+            hypotheses: [],
+            attemptCount: entry.task.attemptCount || checkpoint.attemptCount || 0,
+            failureHistory: [],
+            activeHypothesisId: entry.task.route,
+            finalUrl: entry.task.finalUrl,
+            currentAction: entry.task.currentAction,
+            blockingReason: entry.task.blockingReason,
+            autoRetryCount: entry.task.autoRetryCount,
+            nextAutoRetryAt: entry.task.nextAutoRetryAt,
+            lastProgressAt: entry.task.lastProgressAt || checkpoint.lastProgressAt,
+            checkpointReplayCount: entry.task.checkpointReplayCount,
+            watchdogState: entry.task.watchdogState as TaskRunSummary['watchdogState'],
+            watchdogAlerts: entry.task.watchdogAlerts,
+            selfCheckCount: entry.task.selfCheckCount,
+            lastSelfCheckAt: entry.task.lastSelfCheckAt,
+            longRangePlan: entry.task.longRangePlan || [],
+            strategyHistory: (entry.task.strategyHistory || []).map((item) => ({
+              id: `transcript-strategy-${item.timestamp}-${item.action}`,
+              action: item.action as TaskRunSummary['strategyHistory'][number]['action'],
+              summary: item.summary,
+              reason: item.reason,
+              routeId: item.routeId,
+              targetRouteId: item.targetRouteId,
+              timestamp: item.timestamp,
+            })),
+            taskTodos: [],
+            childRuns: [],
+            checkpoint: {
+              phase: entry.task.phase as TaskRunSummary['phase'],
+              activeHypothesisId: entry.task.route,
+              completedActions: checkpoint.completedActions || [],
+              knownFacts: checkpoint.knownFacts || [],
+              attemptCount: checkpoint.attemptCount || entry.task.attemptCount || 0,
+              nextAction: checkpoint.nextAction,
+              lastProgressAt: checkpoint.lastProgressAt || entry.task.lastProgressAt || entry.timestamp,
+              lastProgressNote: checkpoint.lastProgressNote,
+              progressSignature: checkpoint.progressSignature,
+              lastToolName: checkpoint.lastToolName,
+              lastToolStatus: checkpoint.lastToolStatus,
+              lastToolAt: checkpoint.lastToolAt,
+              stagnationCount: checkpoint.stagnationCount || 0,
+              replayCount: checkpoint.replayCount || 0,
+              lastReplayAt: checkpoint.lastReplayAt,
+              lastReplayReason: checkpoint.lastReplayReason,
+            },
+            createdAt: entry.timestamp,
+            updatedAt: entry.timestamp,
+          };
+        } catch {
+          // Ignore malformed lines and continue scanning backwards.
+        }
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 

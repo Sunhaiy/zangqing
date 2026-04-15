@@ -1,35 +1,26 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } from 'electron';
 import path from 'path';
-import { setupIpcHandlers } from './ipcHandlers';
+import { restoreBackgroundAgentSessions, setupIpcHandlers } from './ipcHandlers';
 
-// Prevent ssh2 zlib/channel errors and other third-party crashes from killing the process
+// Prevent third-party crashes from killing the whole Electron process.
 process.on('uncaughtException', (err) => {
   console.error('[Main] Uncaught exception (non-fatal):', err.message);
-  // Do NOT re-throw — Electron would show the crash dialog and kill the app
 });
 
 process.on('unhandledRejection', (reason) => {
   console.error('[Main] Unhandled rejection (non-fatal):', reason);
 });
 
-
-// Handle creating/removing shortcuts on Windows when installing/uninstalling.
-// if (require('electron-squirrel-startup')) {
-//   app.quit();
-// }
-
-// app.disableHardwareAcceleration();
-
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
+let backgroundRestoreScheduled = false;
 
 export function getMainWindow() {
   return mainWindow;
 }
 
 const createWindow = () => {
-  // Preload path resolution
-  // In dev: ./electron/preload.ts -> compiled to dist-electron/preload.js
-  // In prod: ./resources/app/dist-electron/preload.js
   const preloadPath = path.join(__dirname, 'preload.js');
 
   console.log('Main Process Starting...');
@@ -38,11 +29,11 @@ const createWindow = () => {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    frame: false, // Frameless window
+    frame: false,
     titleBarStyle: 'hidden',
     transparent: true,
     backgroundColor: '#00000000',
-    vibrancy: 'fullscreen-ui', // macOS
+    vibrancy: 'fullscreen-ui',
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -56,24 +47,91 @@ const createWindow = () => {
     mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'));
   }
   mainWindow.maximize();
+
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow?.setSkipTaskbar(true);
+    mainWindow?.hide();
+  });
+
+  mainWindow.on('show', () => {
+    mainWindow?.setSkipTaskbar(false);
+  });
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (backgroundRestoreScheduled) return;
+    backgroundRestoreScheduled = true;
+    setTimeout(() => {
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        restoreBackgroundAgentSessions(mainWindow.webContents);
+      }
+    }, 1500);
+  });
 };
+
+function createTrayIcon() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+      <rect x="3" y="3" width="26" height="26" rx="8" fill="#0f172a"/>
+      <circle cx="16" cy="16" r="6" fill="#22c55e"/>
+      <circle cx="16" cy="16" r="2" fill="#dcfce7"/>
+    </svg>
+  `;
+  return nativeImage
+    .createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
+    .resize({ width: 16, height: 16 });
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.setSkipTaskbar(false);
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTray() {
+  if (tray) return;
+  tray = new Tray(createTrayIcon());
+  tray.setToolTip('后台 Agent 正在运行');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    {
+      label: '打开窗口',
+      click: () => showMainWindow(),
+    },
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]));
+  tray.on('click', () => showMainWindow());
+}
 
 app.whenReady().then(() => {
   setupIpcHandlers();
+  createTray();
   createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+    showMainWindow();
   });
 
-  // Test IPC handler
   ipcMain.handle('get-version', () => app.getVersion());
 });
 
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  // Keep the app and background agent alive even when every window is hidden.
 });

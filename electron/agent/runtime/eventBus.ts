@@ -3,7 +3,23 @@ import type { AgentRuntimeMessage, AgentThreadSession } from '../types.js';
 import { clip } from './helpers.js';
 
 export class AgentEventBus {
+  private planListeners = new Set<(session: AgentThreadSession, planPhase: AgentPlanPhase | string) => void>();
+  private messageListeners = new Set<(session: AgentThreadSession, message: AgentRuntimeMessage) => void>();
+
+  onPlanUpdate(listener: (session: AgentThreadSession, planPhase: AgentPlanPhase | string) => void) {
+    this.planListeners.add(listener);
+    return () => this.planListeners.delete(listener);
+  }
+
+  onMessage(listener: (session: AgentThreadSession, message: AgentRuntimeMessage) => void) {
+    this.messageListeners.add(listener);
+    return () => this.messageListeners.delete(listener);
+  }
+
   emitPlanUpdate(session: AgentThreadSession, planPhase: AgentPlanPhase | string) {
+    for (const listener of this.planListeners) {
+      listener(session, planPhase);
+    }
     if (session.webContents.isDestroyed()) return;
     session.webContents.send('agent-plan-update', {
       sessionId: session.id,
@@ -22,6 +38,9 @@ export class AgentEventBus {
   }
 
   emitAssistantMessage(session: AgentThreadSession, message: AgentRuntimeMessage) {
+    for (const listener of this.messageListeners) {
+      listener(session, message);
+    }
     if (session.webContents.isDestroyed()) return;
     session.webContents.send('agent-push-msg', { sessionId: session.id, message });
   }

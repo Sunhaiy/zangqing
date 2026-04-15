@@ -239,8 +239,10 @@ export function AgentLayout({
         ? (activeStep?.description || (language === 'zh' ? '正在处理任务' : 'Working on task'))
         : currentRuntime?.planStatus === 'generating'
             ? (language === 'zh' ? '正在生成执行计划' : 'Building plan')
-            : currentRuntime?.planStatus === 'paused'
+        : currentRuntime?.planStatus === 'paused'
                 ? (language === 'zh' ? '等待继续' : 'Waiting to continue')
+                : currentRuntime?.planStatus === 'blocked'
+                    ? (language === 'zh' ? '任务被阻塞，等待补充信息' : 'Blocked, waiting for input')
                 : currentRuntime?.planStatus === 'waiting_approval'
                     ? (language === 'zh' ? '等待批准高风险操作' : 'Waiting for approval')
                     : currentRuntime?.planStatus === 'done'
@@ -254,6 +256,8 @@ export function AgentLayout({
             ? (language === 'zh' ? '规划中' : 'Planning')
             : currentRuntime?.planStatus === 'paused'
                 ? (language === 'zh' ? '等待继续' : 'Waiting to continue')
+                : currentRuntime?.planStatus === 'blocked'
+                    ? (language === 'zh' ? '已阻塞' : 'Blocked')
                 : currentRuntime?.planStatus === 'waiting_approval'
                     ? (language === 'zh' ? '等待批准' : 'Waiting for approval')
                     : currentRuntime?.planStatus === 'done'
@@ -507,6 +511,18 @@ export function AgentLayout({
                                                                         </div>
                                                                     </div>
                                                                 )}
+                                                                {runtimeTask.longRangePlan?.length > 0 && (
+                                                                    <div className="rounded-md border border-border bg-background px-2.5 py-2">
+                                                                        <div className="mb-1 text-[10px] text-muted-foreground">{language === 'zh' ? '长期计划' : 'Long-range plan'}</div>
+                                                                        <div className="space-y-1">
+                                                                            {runtimeTask.longRangePlan.slice(0, 6).map((item, index) => (
+                                                                                <div key={`${index}-${item}`} className="leading-relaxed text-foreground/82">
+                                                                                    {index + 1}. {sanitizeRuntimeText(item)}
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                                 {runtimeTask.childRuns?.length > 0 && (
                                                                     <div className="rounded-md border border-border bg-background px-2.5 py-2">
                                                                         <div className="mb-1 text-[10px] text-muted-foreground">{language === 'zh' ? '子任务' : 'Child tasks'}</div>
@@ -533,6 +549,58 @@ export function AgentLayout({
                                                                                 runtimeTask.currentAction,
                                                                                 language === 'zh' ? '正在执行当前动作' : 'Executing the current action',
                                                                             )}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                                {(runtimeTask.watchdogState || runtimeTask.checkpointReplayCount || runtimeTask.selfCheckCount) && (
+                                                                    <div className="rounded-md border border-border bg-background px-2.5 py-2">
+                                                                        <div className="mb-1 text-[10px] text-muted-foreground">{language === 'zh' ? '恢复状态' : 'Recovery state'}</div>
+                                                                        <div className="space-y-1 leading-relaxed text-foreground/82">
+                                                                            {runtimeTask.selfCheckCount ? (
+                                                                                <div>{language === 'zh' ? `主动自检：${runtimeTask.selfCheckCount} 轮` : `Self-check rounds: ${runtimeTask.selfCheckCount}`}</div>
+                                                                            ) : null}
+                                                                            {runtimeTask.watchdogState && (
+                                                                                <div>{language === 'zh' ? `Watchdog：${runtimeTask.watchdogState}` : `Watchdog: ${runtimeTask.watchdogState}`}</div>
+                                                                            )}
+                                                                            <div>{language === 'zh' ? `Checkpoint 回放：${runtimeTask.checkpointReplayCount || runtimeTask.checkpoint.replayCount || 0} 次` : `Checkpoint replays: ${runtimeTask.checkpointReplayCount || runtimeTask.checkpoint.replayCount || 0}`}</div>
+                                                                            {runtimeTask.checkpoint.lastProgressNote && (
+                                                                                <div>{language === 'zh' ? `最后进展：${sanitizeRuntimeText(runtimeTask.checkpoint.lastProgressNote)}` : `Last progress: ${sanitizeRuntimeText(runtimeTask.checkpoint.lastProgressNote)}`}</div>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                                {runtimeTask.strategyHistory?.length > 0 && (
+                                                                    <div className="rounded-md border border-border bg-background px-2.5 py-2">
+                                                                        <div className="mb-1 text-[10px] text-muted-foreground">{language === 'zh' ? '策略记录' : 'Strategy history'}</div>
+                                                                        <div className="space-y-1">
+                                                                            {runtimeTask.strategyHistory.slice(-4).map((item) => (
+                                                                                <div key={item.id} className="space-y-0.5 text-foreground/82">
+                                                                                    <div className="font-medium text-foreground">
+                                                                                        {sanitizeRuntimeText(item.summary)}
+                                                                                    </div>
+                                                                                    <div className="leading-relaxed text-muted-foreground">
+                                                                                        {sanitizeRuntimeText(item.reason)}
+                                                                                    </div>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                                {runtimeTask.nextAutoRetryAt && runtimeTask.status === 'retryable_paused' && (
+                                                                    <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 text-amber-500/85">
+                                                                        <div className="mb-1 text-[10px] text-amber-500/70">{language === 'zh' ? '自动重试' : 'Automatic retry'}</div>
+                                                                        <div className="leading-relaxed">
+                                                                            {language === 'zh'
+                                                                                ? `计划在 ${new Date(runtimeTask.nextAutoRetryAt).toLocaleTimeString()} 自动继续`
+                                                                                : `Scheduled to retry automatically at ${new Date(runtimeTask.nextAutoRetryAt).toLocaleTimeString()}`}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                                {runtimeTask.blockingReason && runtimeTask.status === 'blocked' && (
+                                                                    <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 text-amber-500/85">
+                                                                        <div className="mb-1 text-[10px] text-amber-500/70">{language === 'zh' ? '阻塞原因' : 'Blocking reason'}</div>
+                                                                        <div className="leading-relaxed">
+                                                                            {sanitizeRuntimeText(runtimeTask.blockingReason, language === 'zh' ? '需要补充信息后继续' : 'Waiting for missing input')}
                                                                         </div>
                                                                     </div>
                                                                 )}

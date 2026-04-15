@@ -74,6 +74,12 @@ export class AgentAutoCompactService {
         session.activeTaskRun?.failureHistory.length
           ? `Recent failure: ${session.activeTaskRun.failureHistory[session.activeTaskRun.failureHistory.length - 1]?.failureClass}: ${session.activeTaskRun.failureHistory[session.activeTaskRun.failureHistory.length - 1]?.message}`
           : '',
+        session.activeTaskRun?.longRangePlan.length
+          ? `Long-range plan:\n${session.activeTaskRun.longRangePlan.map((item, index) => `${index + 1}. ${item}`).join('\n')}`
+          : '',
+        session.activeTaskRun?.strategyHistory.length
+          ? `Recent strategy decisions:\n${session.activeTaskRun.strategyHistory.slice(-4).map((item) => `- ${item.action}: ${item.summary}`).join('\n')}`
+          : '',
         session.taskTodos.length
           ? `Todos:\n${session.taskTodos.map((todo) => `- [${todo.status}] ${todo.content}`).join('\n')}`
           : '',
@@ -114,6 +120,12 @@ export class AgentAutoCompactService {
       session.activeTaskRun?.currentAction ? `Current action: ${session.activeTaskRun.currentAction}` : '',
       session.activeTaskRun?.failureHistory.length
         ? `Recent failure: ${session.activeTaskRun.failureHistory[session.activeTaskRun.failureHistory.length - 1]?.failureClass}: ${session.activeTaskRun.failureHistory[session.activeTaskRun.failureHistory.length - 1]?.message}`
+        : '',
+      session.activeTaskRun?.longRangePlan.length
+        ? `Long-range plan:\n${session.activeTaskRun.longRangePlan.map((item, index) => `${index + 1}. ${item}`).join('\n')}`
+        : '',
+      session.activeTaskRun?.strategyHistory.length
+        ? `Recent strategy decisions:\n${session.activeTaskRun.strategyHistory.slice(-4).map((item) => `- ${item.action}: ${item.summary}`).join('\n')}`
         : '',
       session.taskTodos.length
         ? `Todos:\n${session.taskTodos.map((todo) => `- [${todo.status}] ${todo.content}`).join('\n')}`

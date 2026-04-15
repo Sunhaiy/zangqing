@@ -1,14 +1,109 @@
-import { ipcMain, BrowserWindow, dialog, clipboard } from 'electron';
+import { ipcMain, BrowserWindow, dialog, clipboard, type WebContents } from 'electron';
 import { SSHManager } from './ssh/sshManager.js';
 import { DeploymentManager } from './deploy/deploymentManager.js';
 import { AgentManager } from './agent/manager.js';
 import { SSHConnection } from '../src/shared/types.js';
+import { AIProviderProfile } from '../src/shared/aiTypes.js';
+import { LLMProfile } from './llm.js';
 import Store from 'electron-store';
 
 const store = new Store();
 const sshManager = new SSHManager(store);
 const deploymentManager = new DeploymentManager(sshManager, store);
-const agentManager = new AgentManager(sshManager);
+const agentManager = new AgentManager(sshManager, store);
+
+const getSessions = () => (store.get('agentSessions') as any[] | undefined) || [];
+const setSessions = (sessions: any[]) => {
+  store.set('agentSessions', sessions);
+};
+const upsertSession = (session: any) => {
+  const all = getSessions().filter((item: any) => item.id !== session.id);
+  setSessions([...all, session]);
+};
+
+function resolveBackgroundLlmProfile(runtime?: any): LLMProfile | null {
+  const profiles = (store.get('aiProfiles') as AIProviderProfile[] | undefined) || [];
+  const runtimeProfileId = runtime?.agentProfileId as string | undefined;
+  const activeProfileId = (store.get('activeProfileId') as string | undefined) || '';
+  const selected = profiles.find((profile) => profile.id === (runtimeProfileId || activeProfileId));
+
+  if (selected?.provider && selected.baseUrl && selected.model && (selected.apiKey || selected.provider === 'ollama')) {
+    return {
+      provider: selected.provider,
+      apiKey: selected.apiKey,
+      baseUrl: selected.baseUrl,
+      model: selected.model,
+    };
+  }
+
+  const provider = (store.get('aiProvider') as string | undefined) || '';
+  const apiKey = (store.get('aiApiKey') as string | undefined) || '';
+  const baseUrl = (store.get('aiBaseUrl') as string | undefined) || '';
+  const model = (store.get('aiModel') as string | undefined) || '';
+  if (!provider || !baseUrl || !model || (!apiKey && provider !== 'ollama')) {
+    return null;
+  }
+  return { provider, apiKey, baseUrl, model };
+}
+
+export function restoreBackgroundAgentSessions(webContents: WebContents) {
+  const sessions = getSessions();
+  const connections = (store.get('connections') as SSHConnection[] | undefined) || [];
+  const recoverable = sessions.filter((session: any) => {
+    const status = session?.runtime?.activeTaskRun?.status;
+    return Boolean(
+      session?.id
+      && session?.runtime?.activeTaskRun?.goal
+      && ['retryable_paused', 'running', 'repairing'].includes(status),
+    );
+  });
+
+  recoverable.forEach((session: any, index: number) => {
+    const connectionProfile = connections.find((item) => item.id === session.profileId);
+    const llmProfile = resolveBackgroundLlmProfile(session.runtime);
+    if (!connectionProfile || !llmProfile) {
+      return;
+    }
+
+    const backgroundConnectionId = `agent-bg-${session.id}`;
+    sshManager.registerPersistentSession(backgroundConnectionId, connectionProfile, webContents, session.profileId);
+
+    const nextRuntime = {
+      ...(session.runtime || {}),
+      planStatus: 'executing',
+      activeTaskRun: session.runtime?.activeTaskRun
+        ? {
+            ...session.runtime.activeTaskRun,
+            status: 'running',
+            phase: session.runtime.activeTaskRun.phase === 'paused' ? 'act' : session.runtime.activeTaskRun.phase,
+            nextAutoRetryAt: undefined,
+            currentAction: 'Background agent restored in the main process and resumed automatically.',
+          }
+        : session.runtime?.activeTaskRun,
+    };
+    upsertSession({
+      ...session,
+      runtime: nextRuntime,
+      updatedAt: Date.now(),
+    });
+
+    setTimeout(() => {
+      try {
+        agentManager.resume(session.id, {
+          sessionId: session.id,
+          connectionId: backgroundConnectionId,
+          userInput: 'continue',
+          profile: llmProfile,
+          sshHost: session.host,
+          threadMessages: session.messages,
+          restoredRuntime: nextRuntime,
+        }, webContents);
+      } catch (error) {
+        console.warn('[Agent] Failed to restore background session', session.id, error);
+      }
+    }, 1500 * index);
+  });
+}
 
 export function setupIpcHandlers() {
   // ── Universal AI fetch proxy (bypasses renderer CORS) ────────────────────────
@@ -58,24 +153,21 @@ export function setupIpcHandlers() {
   ipcMain.handle('store-delete', (event, key) => store.delete(key as any));
 
   // Agent Session persistence
-  const getSessions = () => (store.get('agentSessions') as any[] | undefined) || [];
-
   ipcMain.handle('agent-session-list', (_event, profileId: string) =>
     getSessions().filter((s: any) => s.profileId === profileId)
       .sort((a: any, b: any) => b.updatedAt - a.updatedAt)
   );
   ipcMain.handle('agent-session-save', (_event, session: any) => {
-    const all = getSessions().filter((s: any) => s.id !== session.id);
-    store.set('agentSessions', [...all, session]);
+    upsertSession(session);
   });
   ipcMain.handle('agent-session-load', (_event, id: string) =>
     getSessions().find((s: any) => s.id === id) || null
   );
   ipcMain.handle('agent-session-delete', (_event, id: string) =>
-    store.set('agentSessions', getSessions().filter((s: any) => s.id !== id))
+    setSessions(getSessions().filter((s: any) => s.id !== id))
   );
   ipcMain.handle('agent-session-set-title', (_event, id: string, title: string) => {
-    store.set('agentSessions', getSessions().map((s: any) =>
+    setSessions(getSessions().map((s: any) =>
       s.id === id ? { ...s, title, updatedAt: Date.now() } : s
     ));
   });

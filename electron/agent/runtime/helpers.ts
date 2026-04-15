@@ -14,18 +14,28 @@ export const LOCAL_PROJECT_PATH_RE = process.platform === 'win32'
   ? WINDOWS_LOCAL_PROJECT_PATH_RE
   : POSIX_LOCAL_PROJECT_PATH_RE;
 export const GITHUB_PROJECT_URL_RE = /https?:\/\/github\.com\/[^\s"'`<>]+/ig;
-export const MAX_GENERIC_TURNS = 48;
+export const MAX_GENERIC_TURNS = 96;
+export const MAX_ROUTE_TURNS = 20;
 export const MAX_AUTONOMOUS_REPAIRS = 5;
+export const MAX_CONSECUTIVE_TOOL_FAILURES = 6;
+export const MAX_LLM_RETRY_ATTEMPTS = 6;
+export const MAX_AUTO_RESUME_ATTEMPTS = 4;
+export const WATCHDOG_STALL_MS = 45000;
+export const WATCHDOG_STAGNATION_LIMIT = 3;
 
 const TOOL_LABELS: Record<string, string> = {
   local_list_directory: 'Inspect local directory',
   local_read_file: 'Read local file',
   local_write_file: 'Write local file',
+  local_replace_in_file: 'Patch local file',
+  local_apply_patch: 'Apply local patch',
   local_exec: 'Run local command',
   remote_exec: 'Run remote command',
   remote_list_directory: 'Inspect remote directory',
   remote_read_file: 'Read remote file',
   remote_write_file: 'Write remote file',
+  remote_replace_in_file: 'Patch remote file',
+  remote_apply_patch: 'Apply remote patch',
   remote_upload_file: 'Upload file',
   remote_download_file: 'Download file',
   http_probe: 'Probe HTTP endpoint',
@@ -90,6 +100,23 @@ export function looksLikeSiteFollowUpGoal(input: string) {
   );
 }
 
+export function looksLikeDeploymentGoal(input: string) {
+  const lowered = input.toLowerCase();
+  return (
+    /\b(?:deploy|redeploy|publish|ship|release|rollback|roll back|build|rebuild|start|restart|boot|run|serve|launch|bring up|expose|bind port|bind domain)\b/.test(lowered)
+    || /\u90e8\u7f72|\u91cd\u65b0\u90e8\u7f72|\u53d1\u5e03|\u4e0a\u7ebf|\u56de\u6eda|\u6784\u5efa|\u91cd\u6784\u5efa|\u7f16\u8bd1|\u542f\u52a8|\u91cd\u542f|\u8dd1\u8d77\u6765|\u8fd0\u884c|\u63d0\u4f9b\u9759\u6001\u670d\u52a1|\u7ed1\u5b9a\u7aef\u53e3|\u6682\u505c|\u6062\u590d/.test(input)
+  );
+}
+
+export function looksLikeProjectScopedGoal(input: string) {
+  const lowered = input.toLowerCase();
+  return (
+    /\b(?:project|repo|repository|codebase|app|application|site|workspace)\b/.test(lowered)
+    || /\b(?:this|that|current|previous)\s+(?:project|repo|app|site)\b/.test(lowered)
+    || /\u8fd9\u4e2a\u9879\u76ee|\u8be5\u9879\u76ee|\u5f53\u524d\u9879\u76ee|\u521a\u624d\u90a3\u4e2a\u9879\u76ee|\u8fd9\u4e2a\u7ad9\u70b9|\u8be5\u7ad9\u70b9|\u8fd9\u4e2a\u5e94\u7528|\u8be5\u5e94\u7528|\u9879\u76ee|\u4ed3\u5e93|\u4ee3\u7801|\u7ad9\u70b9|\u5e94\u7528/.test(input)
+  );
+}
+
 export function cleanDeployCandidate(input: string) {
   return input.trim().replace(/[),.;!?，。；：]+$/, '');
 }
@@ -106,7 +133,7 @@ export function extractDeploySource(input: string, knownPaths: string[]): string
     return best ? cleanDeployCandidate(best) : null;
   }
 
-  return knownPaths.length > 0 ? knownPaths[knownPaths.length - 1] || null : null;
+  return null;
 }
 
 function summarizePrimaryArgument(args: Record<string, unknown>) {
@@ -144,6 +171,7 @@ export function makeArtifact(title: string, content: string): AgentArtifact {
 export function phaseToPlanStatus(run: TaskRunSummary): AgentPlanPhase {
   if (run.status === 'completed') return 'done';
   if (run.status === 'retryable_paused' || run.status === 'paused') return 'paused';
+  if (run.status === 'blocked' || run.phase === 'blocked') return 'blocked';
   if (run.status === 'failed') return 'stopped';
   if (run.phase === 'understand' || run.phase === 'inspect' || run.phase === 'hypothesize') return 'generating';
   return 'executing';

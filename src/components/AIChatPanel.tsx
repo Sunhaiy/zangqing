@@ -115,6 +115,12 @@ export function AIChatPanel({
     const modelMenuRef = useRef<HTMLDivElement>(null);
     const latestMessagesRef = useRef(messages);
     const onMessagesChangeRef = useRef(onMessagesChange);
+    const activeTaskRunRef = useRef<TaskRunSummary | null>(null);
+    const runtimeSnapshotRef = useRef<AgentSessionRuntime | null>(null);
+    const selectedProfileRef = useRef<AIProviderProfile | undefined>(undefined);
+    const autoResumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const restoredAutoResumeKeyRef = useRef('');
+    const scheduledAutoResumeKeyRef = useRef('');
     const { aiSendShortcut, agentControlMode, setAgentControlMode, agentWhitelist, aiProfiles, activeProfileId } = useSettingsStore();
     const { t, language } = useTranslation();
     const agentControlModeRef = useRef(agentControlMode);
@@ -126,6 +132,8 @@ export function AIChatPanel({
     const pendingChatDeployRef = useRef<{ chatSessionId: string; projectRoot: string } | null>(null);
     useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
     useEffect(() => { onMessagesChangeRef.current = onMessagesChange; }, [onMessagesChange]);
+
+    const getSelectedProfile = () => aiProfiles.find(p => p.id === (agentProfileId || activeProfileId));
 
     const buildRuntimeSnapshot = (): AgentSessionRuntime => ({
         planState,
@@ -142,6 +150,18 @@ export function AIChatPanel({
         memoryFiles,
         compactState: compactState || undefined,
     });
+
+    const buildAutoResumeKey = (run?: TaskRunSummary | null, currentSessionId = sessionId) => {
+        if (!run || run.status !== 'retryable_paused' || !run.nextAutoRetryAt) return '';
+        return `${currentSessionId}:${run.id}:${run.autoRetryCount ?? 0}:${run.nextAutoRetryAt}`;
+    };
+
+    const clearAutoResumeTimer = () => {
+        if (autoResumeTimerRef.current) {
+            clearTimeout(autoResumeTimerRef.current);
+            autoResumeTimerRef.current = null;
+        }
+    };
 
     // Inject CSS keyframes for AI chat animations (runs once)
     useEffect(() => {
@@ -199,12 +219,30 @@ export function AIChatPanel({
     useEffect(() => { latestMessagesRef.current = messages; }, [messages]);
     useEffect(() => { agentControlModeRef.current = agentControlMode; }, [agentControlMode]);
     useEffect(() => { agentWhitelistRef.current = agentWhitelist; }, [agentWhitelist]);
+    useEffect(() => { activeTaskRunRef.current = activeTaskRun; }, [activeTaskRun]);
+    useEffect(() => { selectedProfileRef.current = getSelectedProfile(); }, [aiProfiles, agentProfileId, activeProfileId]);
 
     // Restore per-chat execution state when switching sessions.
     useEffect(() => {
         const runtime = restoredRuntime || null;
         const nextPlanState = runtime?.planState || null;
         const nextPlanStatus = normalizeRestoredPlanStatus(runtime?.planStatus);
+        const nextActiveTaskRun = runtime?.activeTaskRun || null;
+        const nextSnapshot: AgentSessionRuntime = {
+            planState: nextPlanState,
+            planStatus: nextPlanStatus,
+            contextWindow: runtime?.contextWindow || null,
+            compressedMemory: runtime?.compressedMemory || '',
+            knownProjectPaths: runtime?.knownProjectPaths || [],
+            agentModel: runtime?.agentModel || '',
+            agentProfileId: runtime?.agentProfileId || '',
+            activeRunId: runtime?.activeRunId,
+            activeTaskRun: nextActiveTaskRun,
+            compressedRunMemory: runtime?.compressedRunMemory || '',
+            taskTodos: runtime?.taskTodos || [],
+            memoryFiles: runtime?.memoryFiles || [],
+            compactState: runtime?.compactState || undefined,
+        };
 
         setPlanState(nextPlanState);
         planStateRef.current = nextPlanState;
@@ -215,11 +253,16 @@ export function AIChatPanel({
         setAgentModel(runtime?.agentModel || '');
         setAgentProfileId(runtime?.agentProfileId || '');
         setActiveRunId(runtime?.activeRunId);
-        setActiveTaskRun(runtime?.activeTaskRun || null);
+        setActiveTaskRun(nextActiveTaskRun);
+        activeTaskRunRef.current = nextActiveTaskRun;
         setCompressedRunMemory(runtime?.compressedRunMemory || '');
         setTaskTodos(runtime?.taskTodos || []);
         setMemoryFiles(runtime?.memoryFiles || []);
         setCompactState(runtime?.compactState || null);
+        runtimeSnapshotRef.current = nextSnapshot;
+        clearAutoResumeTimer();
+        restoredAutoResumeKeyRef.current = buildAutoResumeKey(nextActiveTaskRun, sessionId);
+        scheduledAutoResumeKeyRef.current = '';
         setPendingCommands([]);
         setIsLoading(false);
         isLoadingRef.current = false;
@@ -260,9 +303,80 @@ export function AIChatPanel({
     }, [messages, planState, planStatus, contextWindow, compressedMemory, knownProjectPaths, agentModel, agentProfileId, activeRunId, activeTaskRun, compressedRunMemory, taskTodos, memoryFiles, compactState]);
 
     useEffect(() => {
-        onRuntimeChange?.(buildRuntimeSnapshot());
+        const runtime = buildRuntimeSnapshot();
+        runtimeSnapshotRef.current = runtime;
+        onRuntimeChange?.(runtime);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [planState, planStatus, contextWindow, compressedMemory, knownProjectPaths, agentModel, agentProfileId, activeRunId, activeTaskRun, compressedRunMemory, taskTodos, memoryFiles, compactState]);
+
+    useEffect(() => {
+        const restoreKey = restoredAutoResumeKeyRef.current;
+        const currentKey = buildAutoResumeKey(activeTaskRun);
+        if (!restoreKey || !currentKey || currentKey !== restoreKey) {
+            if (!currentKey) {
+                restoredAutoResumeKeyRef.current = '';
+                scheduledAutoResumeKeyRef.current = '';
+            }
+            clearAutoResumeTimer();
+            return;
+        }
+
+        if (scheduledAutoResumeKeyRef.current === currentKey) {
+            return;
+        }
+
+        const profile = selectedProfileRef.current;
+        const eWin = window as any;
+        if (!profile || !eWin.electron?.agentPlanResume) {
+            return;
+        }
+
+        clearAutoResumeTimer();
+        scheduledAutoResumeKeyRef.current = currentKey;
+        const delayMs = Math.max(250, (activeTaskRun?.nextAutoRetryAt || Date.now()) - Date.now());
+
+        autoResumeTimerRef.current = setTimeout(async () => {
+            autoResumeTimerRef.current = null;
+            const latestRun = activeTaskRunRef.current;
+            if (buildAutoResumeKey(latestRun) !== currentKey || latestRun?.status !== 'retryable_paused') {
+                if (!latestRun || latestRun.status !== 'retryable_paused') {
+                    restoredAutoResumeKeyRef.current = '';
+                    scheduledAutoResumeKeyRef.current = '';
+                }
+                return;
+            }
+
+            restoredAutoResumeKeyRef.current = '';
+            scheduledAutoResumeKeyRef.current = '';
+            setIsLoading(true);
+            isLoadingRef.current = true;
+
+            try {
+                await eWin.electron.agentPlanResume({
+                    sessionId,
+                    connectionId,
+                    userInput: 'continue',
+                    profile: selectedProfileRef.current,
+                    sshHost: host,
+                    threadMessages: latestMessagesRef.current,
+                    restoredRuntime: runtimeSnapshotRef.current || buildRuntimeSnapshot(),
+                });
+            } catch (err) {
+                setIsLoading(false);
+                isLoadingRef.current = false;
+                console.warn('Failed to auto-resume restored agent session:', err);
+            }
+        }, delayMs);
+
+        return () => {
+            clearAutoResumeTimer();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sessionId, connectionId, host, activeTaskRun?.id, activeTaskRun?.status, activeTaskRun?.nextAutoRetryAt, activeTaskRun?.autoRetryCount, aiProfiles, agentProfileId, activeProfileId]);
+
+    useEffect(() => () => {
+        clearAutoResumeTimer();
+    }, []);
 
     // Auto-scroll to bottom
     useEffect(() => {
@@ -295,7 +409,11 @@ export function AIChatPanel({
                 setTaskTodos(Array.isArray(nextTaskTodos) ? nextTaskTodos : []);
                 setMemoryFiles(Array.isArray(nextMemoryFiles) ? nextMemoryFiles : []);
                 setCompactState(nextCompactState || null);
-                if (['done', 'stopped', 'paused', 'waiting_approval'].includes(planPhase)) {
+                if (['executing', 'generating'].includes(planPhase)) {
+                    setIsLoading(true);
+                    isLoadingRef.current = true;
+                }
+                if (['done', 'stopped', 'paused', 'blocked', 'waiting_approval'].includes(planPhase)) {
                     setIsLoading(false);
                     isLoadingRef.current = false;
                 }
@@ -727,8 +845,6 @@ export function AIChatPanel({
     };
 
     // 鈹€鈹€ Plan Mode v2: Planner / Executor / Assessor / Replanner 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    const getSelectedProfile = () => aiProfiles.find(p => p.id === (agentProfileId || activeProfileId));
-
     const handleSend = async () => {
         if (!input.trim() || isLoading) return;
         const trimmedInput = input.trim();
@@ -764,7 +880,7 @@ export function AIChatPanel({
             && (
                 isContinueMessage
                 || isStatusMessage
-                || ((planStatus === 'paused' || planStatus === 'waiting_approval') && planStateRef.current !== null)
+                || ((planStatus === 'paused' || planStatus === 'blocked' || planStatus === 'waiting_approval') && planStateRef.current !== null)
                 || (planStatus === 'stopped' && (planStateRef.current !== null || messages.length > 0))
             );
         if (!isResuming) {
@@ -1173,7 +1289,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
         const isPending = toolCall.status === 'pending';
         // Determine icon and color based on tool name
         const isRead = ['read_file', 'local_read_file', 'remote_read_file'].includes(toolCall.name);
-        const isWrite = ['write_file', 'local_write_file', 'remote_write_file'].includes(toolCall.name);
+        const isWrite = ['write_file', 'local_write_file', 'remote_write_file', 'local_replace_in_file', 'remote_replace_in_file', 'local_apply_patch', 'remote_apply_patch'].includes(toolCall.name);
         const isList = ['list_directory', 'local_list_directory', 'remote_list_directory'].includes(toolCall.name);
         const isDeploy = toolCall.name === 'deploy_project' || toolCall.name === 'resume_deploy_run';
         const isFileOp = isRead || isWrite || isList || ['remote_upload_file', 'remote_download_file'].includes(toolCall.name);
@@ -1185,9 +1301,13 @@ function MessageBubble({ message }: { message: AgentMessage }) {
             list_directory: { accent: '#06b6d4', light: 'rgba(6,182,212,0.12)', label: '列出目录' },
             local_read_file: { accent: '#3b82f6', light: 'rgba(59,130,246,0.12)', label: '读取本地文件' },
             local_write_file: { accent: '#f59e0b', light: 'rgba(245,158,11,0.12)', label: '写入本地文件' },
+            local_replace_in_file: { accent: '#f59e0b', light: 'rgba(245,158,11,0.12)', label: '局部修改本地文件' },
+            local_apply_patch: { accent: '#f59e0b', light: 'rgba(245,158,11,0.12)', label: '补丁修改本地文件' },
             local_list_directory: { accent: '#06b6d4', light: 'rgba(6,182,212,0.12)', label: '本地目录' },
             remote_read_file: { accent: '#60a5fa', light: 'rgba(96,165,250,0.12)', label: '读取远程文件' },
             remote_write_file: { accent: '#fbbf24', light: 'rgba(251,191,36,0.12)', label: '写入远程文件' },
+            remote_replace_in_file: { accent: '#fbbf24', light: 'rgba(251,191,36,0.12)', label: '局部修改远程文件' },
+            remote_apply_patch: { accent: '#fbbf24', light: 'rgba(251,191,36,0.12)', label: '补丁修改远程文件' },
             remote_list_directory: { accent: '#22d3ee', light: 'rgba(34,211,238,0.12)', label: '远程目录' },
             remote_upload_file: { accent: '#8b5cf6', light: 'rgba(139,92,246,0.12)', label: '上传文件' },
             remote_download_file: { accent: '#a855f7', light: 'rgba(168,85,247,0.12)', label: '下载文件' },

@@ -1,5 +1,5 @@
 ﻿import path from 'path';
-import { promises as fs } from 'fs';
+import { Dirent, promises as fs } from 'fs';
 import type { WebContents } from 'electron';
 import type { LLMMessage, LLMProfile } from '../../llm.js';
 import type { FailureClass } from '../../../src/shared/deployTypes.js';
@@ -11,6 +11,8 @@ import type {
   AgentCompactState,
   RouteHypothesis,
   RunCheckpoint,
+  StrategyDecision,
+  StrategyDecisionAction,
   TaskTodoItem,
   TaskRunFailure,
   TaskRunSummary,
@@ -32,10 +34,14 @@ import {
   extractDeploySource,
   isContinueIntent,
   isOptionSelection,
+  looksLikeDeploymentGoal,
+  looksLikeProjectScopedGoal,
   looksLikeSiteFollowUpGoal,
   normalizePathCandidate,
   now,
   phaseToPlanStatus,
+  WATCHDOG_STAGNATION_LIMIT,
+  WATCHDOG_STALL_MS,
 } from '../runtime/helpers.js';
 interface EnsureSessionOptions {
   connectionId: string;
@@ -60,6 +66,88 @@ export class AgentSessionStore {
     return this.sessions.get(sessionId);
   }
 
+  private createCheckpoint(phase: RunCheckpoint['phase'], nextAction?: string): RunCheckpoint {
+    const timestamp = now();
+    return {
+      phase,
+      completedActions: [],
+      knownFacts: [],
+      attemptCount: 0,
+      nextAction,
+      lastProgressAt: timestamp,
+      stagnationCount: 0,
+      replayCount: 0,
+    };
+  }
+
+  private normalizeCheckpoint(
+    checkpoint: Partial<RunCheckpoint> | undefined,
+    defaults: { phase: RunCheckpoint['phase']; attemptCount?: number; nextAction?: string; activeHypothesisId?: string },
+  ): RunCheckpoint {
+    const timestamp = now();
+    const fallback = this.createCheckpoint(defaults.phase, defaults.nextAction);
+    return {
+      ...fallback,
+      ...(checkpoint || {}),
+      phase: checkpoint?.phase || defaults.phase,
+      activeHypothesisId: checkpoint?.activeHypothesisId || defaults.activeHypothesisId,
+      completedActions: checkpoint?.completedActions || fallback.completedActions,
+      knownFacts: checkpoint?.knownFacts || fallback.knownFacts,
+      attemptCount: checkpoint?.attemptCount ?? defaults.attemptCount ?? fallback.attemptCount,
+      nextAction: checkpoint?.nextAction ?? defaults.nextAction,
+      lastProgressAt: checkpoint?.lastProgressAt || timestamp,
+      stagnationCount: checkpoint?.stagnationCount ?? 0,
+      replayCount: checkpoint?.replayCount ?? 0,
+    };
+  }
+
+  private restoreTaskRun(
+    taskRun: Partial<TaskRunSummary> | null | undefined,
+    fallbackTodos?: TaskTodoItem[],
+  ): TaskRunSummary | null {
+    if (!taskRun?.id || !taskRun.goal) return null;
+    const createdAt = taskRun.createdAt || now();
+    const attemptCount = taskRun.attemptCount || taskRun.checkpoint?.attemptCount || 0;
+    const phase = taskRun.phase || taskRun.checkpoint?.phase || 'act';
+    const checkpoint = this.normalizeCheckpoint(taskRun.checkpoint, {
+      phase,
+      attemptCount,
+      nextAction: taskRun.checkpoint?.nextAction,
+      activeHypothesisId: taskRun.activeHypothesisId,
+    });
+    return {
+      id: taskRun.id,
+      goal: taskRun.goal,
+      mode: taskRun.mode || (taskRun.source ? 'project' : 'generic'),
+      status: taskRun.status || 'paused',
+      phase,
+      source: taskRun.source,
+      repoAnalysis: taskRun.repoAnalysis,
+      hypotheses: taskRun.hypotheses || [],
+      activeHypothesisId: taskRun.activeHypothesisId || checkpoint.activeHypothesisId,
+      attemptCount,
+      failureHistory: taskRun.failureHistory || [],
+      checkpoint,
+      finalUrl: taskRun.finalUrl,
+      currentAction: taskRun.currentAction,
+      blockingReason: taskRun.blockingReason,
+      autoRetryCount: taskRun.autoRetryCount || 0,
+      nextAutoRetryAt: taskRun.nextAutoRetryAt,
+      lastProgressAt: taskRun.lastProgressAt || checkpoint.lastProgressAt,
+      checkpointReplayCount: taskRun.checkpointReplayCount ?? checkpoint.replayCount ?? 0,
+      watchdogState: taskRun.watchdogState || 'healthy',
+      watchdogAlerts: taskRun.watchdogAlerts || 0,
+      selfCheckCount: taskRun.selfCheckCount || 0,
+      lastSelfCheckAt: taskRun.lastSelfCheckAt,
+      strategyHistory: taskRun.strategyHistory || [],
+      longRangePlan: taskRun.longRangePlan || [],
+      taskTodos: taskRun.taskTodos || fallbackTodos || this.createDefaultTodos(),
+      childRuns: taskRun.childRuns || [],
+      createdAt,
+      updatedAt: taskRun.updatedAt || createdAt,
+    };
+  }
+
   async ensureSession(sessionId: string, options: EnsureSessionOptions): Promise<AgentThreadSession> {
     const existing = this.sessions.get(sessionId);
     if (existing) {
@@ -72,6 +160,12 @@ export class AgentSessionStore {
 
     const localContext = await buildLocalContext();
     const restored = options.restoredRuntime;
+    const transcriptTaskSnapshot = await this.transcriptStore.loadLatestTaskSnapshot(sessionId);
+    const restoredTaskRun = restored?.activeTaskRun;
+    const preferredTaskRun = transcriptTaskSnapshot
+      && (!restoredTaskRun || (transcriptTaskSnapshot.updatedAt || 0) >= (restoredTaskRun.updatedAt || 0))
+      ? transcriptTaskSnapshot
+      : restoredTaskRun;
     const seededHistory = restored?.compressedMemory
       ? []
       : await this.transcriptStore.loadRecentMessages(sessionId, 10);
@@ -117,16 +211,11 @@ export class AgentSessionStore {
         consecutiveFailures: 0,
         paused: false,
       },
-      activeRunId: restored?.activeRunId,
-      activeTaskRun: restored?.activeTaskRun
-        ? {
-            ...restored.activeTaskRun,
-            mode: restored.activeTaskRun.mode
-              || (restored.activeTaskRun.source ? 'project' : 'generic'),
-            childRuns: restored.activeTaskRun.childRuns || [],
-            taskTodos: restored.activeTaskRun.taskTodos || restored?.taskTodos || this.createDefaultTodos(),
-          }
-        : null,
+      activeRunId: restored?.activeRunId || preferredTaskRun?.id,
+      activeTaskRun: this.restoreTaskRun(
+        preferredTaskRun,
+        restored?.taskTodos || [],
+      ),
       resumeRequested: false,
       recentHttpProbes: [],
       lastToolFailure: undefined,
@@ -160,7 +249,7 @@ export class AgentSessionStore {
     },
   ) {
     const resumingGoal = isContinueIntent(options.goal)
-      || (isOptionSelection(options.goal) && Boolean(session.activeTaskRun) && !['completed', 'failed'].includes(session.activeTaskRun?.status || ''));
+      || (isOptionSelection(options.goal) && Boolean(session.activeTaskRun) && session.activeTaskRun?.status !== 'completed');
     const previousGoal = session.activeTaskRun?.goal || session.planState.global_goal;
     const effectiveGoal = resumingGoal && previousGoal ? previousGoal : options.goal.trim();
 
@@ -197,6 +286,14 @@ export class AgentSessionStore {
     await this.refreshMemory(session, this.pickLikelyProjectPath(session.knownProjectPaths));
     this.seedFollowUpMemory(session, effectiveGoal);
     this.historyPush(session, { role: 'user', content: options.goal });
+    if (resumingGoal && session.activeTaskRun) {
+      this.replayCheckpoint(session, {
+        trigger: isContinueIntent(options.goal) || isOptionSelection(options.goal) ? 'resume' : 'restore',
+        reason: session.activeTaskRun.status === 'retryable_paused'
+          ? 'Resume after preserved retry pause'
+          : 'Resume the preserved task from the last checkpoint',
+      });
+    }
     return {
       effectiveGoal,
       resumeRequested: resumingGoal,
@@ -292,6 +389,7 @@ export class AgentSessionStore {
   createTaskRun(goal: string, sourceLabel: string): TaskRunSummary {
     const createdAt = now();
     const taskTodos = this.createDefaultTodos();
+    const checkpoint = this.createCheckpoint('understand');
     return {
       id: buildTaskRunId(),
       goal,
@@ -305,12 +403,16 @@ export class AgentSessionStore {
       hypotheses: [],
       attemptCount: 0,
       failureHistory: [],
-      checkpoint: {
-        phase: 'understand',
-        completedActions: [],
-        knownFacts: [],
-        attemptCount: 0,
-      },
+      checkpoint,
+      autoRetryCount: 0,
+      lastProgressAt: checkpoint.lastProgressAt,
+      checkpointReplayCount: 0,
+      watchdogState: 'healthy',
+      watchdogAlerts: 0,
+      selfCheckCount: 0,
+      lastSelfCheckAt: undefined,
+      strategyHistory: [],
+      longRangePlan: [],
       taskTodos,
       childRuns: [],
       currentAction: /^https?:\/\/github\.com\//i.test(sourceLabel)
@@ -332,6 +434,7 @@ export class AgentSessionStore {
   ): TaskRunSummary {
     const createdAt = now();
     const taskTodos = this.createDefaultTodos();
+    const checkpoint = this.createCheckpoint('act', options?.nextAction);
     return {
       id: buildTaskRunId(),
       goal,
@@ -347,13 +450,16 @@ export class AgentSessionStore {
       hypotheses: [],
       attemptCount: 0,
       failureHistory: [],
-      checkpoint: {
-        phase: 'act',
-        completedActions: [],
-        knownFacts: [],
-        attemptCount: 0,
-        nextAction: options?.nextAction,
-      },
+      checkpoint,
+      autoRetryCount: 0,
+      lastProgressAt: checkpoint.lastProgressAt,
+      checkpointReplayCount: 0,
+      watchdogState: 'healthy',
+      watchdogAlerts: 0,
+      selfCheckCount: 0,
+      lastSelfCheckAt: undefined,
+      strategyHistory: [],
+      longRangePlan: [],
       taskTodos,
       childRuns: [],
       currentAction: options?.currentAction || 'Working on the current task',
@@ -362,10 +468,164 @@ export class AgentSessionStore {
     };
   }
 
+  recordProgress(
+    session: AgentThreadSession,
+    input: {
+      note: string;
+      signature?: string;
+      force?: boolean;
+      toolName?: string;
+      toolStatus?: 'success' | 'failure';
+    },
+  ) {
+    const run = session.activeTaskRun;
+    if (!run) {
+      return {
+        progressed: false,
+        stagnationCount: 0,
+        stallAgeMs: 0,
+      };
+    }
+
+    const checkpoint = this.normalizeCheckpoint(run.checkpoint, {
+      phase: run.phase,
+      attemptCount: run.attemptCount,
+      nextAction: run.checkpoint.nextAction,
+      activeHypothesisId: run.activeHypothesisId,
+    });
+    const note = input.note.trim();
+    const signature = (input.signature || note || checkpoint.nextAction || '').trim().toLowerCase().slice(0, 400);
+    const sameSignature = Boolean(signature) && signature === checkpoint.progressSignature;
+    const progressed = input.force || (!sameSignature && Boolean(signature || note));
+    const progressTimestamp = progressed ? now() : checkpoint.lastProgressAt;
+    const stagnationCount = progressed ? 0 : checkpoint.stagnationCount + 1;
+
+    run.checkpoint = {
+      ...checkpoint,
+      lastProgressNote: note || checkpoint.lastProgressNote,
+      progressSignature: signature || checkpoint.progressSignature,
+      lastProgressAt: progressTimestamp,
+      stagnationCount,
+      lastToolName: input.toolName ?? checkpoint.lastToolName,
+      lastToolStatus: input.toolStatus ?? checkpoint.lastToolStatus,
+      lastToolAt: input.toolName ? now() : checkpoint.lastToolAt,
+    };
+    run.lastProgressAt = progressTimestamp;
+    run.watchdogState = stagnationCount >= WATCHDOG_STAGNATION_LIMIT ? 'stalled' : 'healthy';
+
+    return {
+      progressed,
+      stagnationCount,
+      stallAgeMs: Math.max(0, now() - progressTimestamp),
+    };
+  }
+
+  getWatchdogSnapshot(session: AgentThreadSession) {
+    const run = session.activeTaskRun;
+    if (!run) {
+      return {
+        stalled: false,
+        stagnationCount: 0,
+        stallAgeMs: 0,
+        shouldEscalate: false,
+      };
+    }
+    const lastProgressAt = run.checkpoint.lastProgressAt || run.lastProgressAt || run.updatedAt;
+    const stallAgeMs = Math.max(0, now() - lastProgressAt);
+    const stagnationCount = run.checkpoint.stagnationCount || 0;
+    const stalled = stagnationCount >= WATCHDOG_STAGNATION_LIMIT || stallAgeMs >= WATCHDOG_STALL_MS;
+    return {
+      stalled,
+      stagnationCount,
+      stallAgeMs,
+      shouldEscalate: stalled && (run.watchdogAlerts || 0) < 6,
+    };
+  }
+
+  replayCheckpoint(
+    session: AgentThreadSession,
+    input: {
+      trigger: 'resume' | 'watchdog' | 'restore';
+      reason: string;
+      emitMessage?: boolean;
+      addHistory?: boolean;
+    },
+  ) {
+    const run = session.activeTaskRun;
+    if (!run) return null;
+
+    const route = run.activeHypothesisId
+      ? run.hypotheses.find((item) => item.id === run.activeHypothesisId)?.kind || run.activeHypothesisId
+      : undefined;
+    const lastFailure = run.failureHistory[run.failureHistory.length - 1];
+    const knownFacts = run.checkpoint.knownFacts.slice(-4);
+    const summary = [
+      `Checkpoint replay triggered by ${input.trigger}: ${input.reason}`,
+      `Run goal: ${run.goal}`,
+      `Phase/status: ${run.phase}/${run.status}`,
+      route ? `Route: ${route}` : '',
+      run.checkpoint.lastProgressNote ? `Last confirmed progress: ${clip(run.checkpoint.lastProgressNote, 320)}` : '',
+      run.checkpoint.nextAction ? `Next action: ${clip(run.checkpoint.nextAction, 320)}` : '',
+      lastFailure ? `Recent failure: ${lastFailure.failureClass}: ${clip(lastFailure.message, 320)}` : '',
+      knownFacts.length ? `Known facts:\n${knownFacts.map((item) => `- ${clip(item, 220)}`).join('\n')}` : '',
+      input.trigger === 'watchdog'
+        ? 'Recovery instruction: do not repeat the same failing or stagnant step unchanged. Re-inspect the environment and choose a different strategy.'
+        : '',
+    ].filter(Boolean).join('\n');
+
+    run.checkpoint = {
+      ...run.checkpoint,
+      replayCount: (run.checkpoint.replayCount || 0) + 1,
+      lastReplayAt: now(),
+      lastReplayReason: input.reason,
+      lastProgressAt: now(),
+      lastProgressNote: run.checkpoint.lastProgressNote || run.currentAction || run.goal,
+      progressSignature: `replay:${input.trigger}:${clip(input.reason, 120)}`,
+      stagnationCount: 0,
+    };
+    run.lastProgressAt = run.checkpoint.lastProgressAt;
+    run.checkpointReplayCount = (run.checkpointReplayCount || 0) + 1;
+    run.watchdogState = input.trigger === 'watchdog' ? 'recovering' : 'healthy';
+    if (input.trigger === 'watchdog') {
+      run.watchdogAlerts = (run.watchdogAlerts || 0) + 1;
+    }
+
+    session.planState.scratchpad = appendScratchpad(
+      session.planState.scratchpad,
+      `Checkpoint replay (${input.trigger}): ${input.reason}`,
+    );
+    session.planState.scratchpad = appendScratchpad(
+      session.planState.scratchpad,
+      run.checkpoint.nextAction ? `Replay next action: ${run.checkpoint.nextAction}` : `Replay current action: ${run.currentAction || run.goal}`,
+    );
+
+    if (input.addHistory !== false) {
+      this.historyPush(session, { role: 'assistant', content: summary });
+    }
+
+    if (input.emitMessage !== false) {
+      this.events.emitAssistantMessage(session, {
+        id: `checkpoint-replay-${Date.now()}`,
+        role: 'assistant',
+        content: input.trigger === 'watchdog'
+          ? 'Watchdog detected stalled progress. I restored the latest checkpoint and will force a different strategy.'
+          : 'Recovered the latest checkpoint and will continue from the preserved task state.',
+        timestamp: now(),
+      });
+    }
+
+    return summary;
+  }
+
   attachTaskRun(session: AgentThreadSession, taskRun: TaskRunSummary) {
     session.activeTaskRun = taskRun;
     session.activeRunId = taskRun.id;
     session.taskTodos = taskRun.taskTodos;
+    this.recordProgress(session, {
+      note: taskRun.currentAction || taskRun.goal,
+      signature: `attach:${taskRun.mode}:${taskRun.phase}:${taskRun.currentAction || taskRun.goal}`,
+      force: true,
+    });
     this.syncPlanFromTaskRun(session);
     void this.transcriptStore.appendTaskSnapshot(session.id, taskRun);
     this.events.emitPlanUpdate(session, phaseToPlanStatus(taskRun));
@@ -375,12 +635,29 @@ export class AgentSessionStore {
     session: AgentThreadSession,
     patch: Partial<TaskRunSummary>,
     checkpointPatch?: Partial<RunCheckpoint>,
+    options?: {
+      suppressProgressLog?: boolean;
+      trackProgress?: boolean;
+      progressNote?: string;
+      progressSignature?: string;
+      progressForce?: boolean;
+      toolName?: string;
+      toolStatus?: 'success' | 'failure';
+    },
   ) {
     if (!session.activeTaskRun) return;
-    const checkpoint = {
-      ...session.activeTaskRun.checkpoint,
-      ...(checkpointPatch || {}),
-    };
+    const checkpoint = this.normalizeCheckpoint(
+      {
+        ...session.activeTaskRun.checkpoint,
+        ...(checkpointPatch || {}),
+      },
+      {
+        phase: checkpointPatch?.phase || patch.phase || session.activeTaskRun.phase,
+        attemptCount: checkpointPatch?.attemptCount ?? patch.attemptCount ?? session.activeTaskRun.attemptCount,
+        nextAction: checkpointPatch?.nextAction ?? patch.checkpoint?.nextAction ?? session.activeTaskRun.checkpoint.nextAction,
+        activeHypothesisId: checkpointPatch?.activeHypothesisId || patch.activeHypothesisId || session.activeTaskRun.activeHypothesisId,
+      },
+    );
     session.activeTaskRun = {
       ...session.activeTaskRun,
       ...patch,
@@ -392,10 +669,26 @@ export class AgentSessionStore {
     } else if (session.activeTaskRun.taskTodos?.length) {
       session.taskTodos = session.activeTaskRun.taskTodos;
     }
+    const isHeartbeatAction = typeof patch.currentAction === 'string' && /\belapsed\b/i.test(patch.currentAction);
+    if (options?.trackProgress !== false) {
+      const progressNote = options?.progressNote
+        || (!isHeartbeatAction ? patch.currentAction : undefined)
+        || checkpointPatch?.nextAction
+        || patch.goal;
+      if (progressNote?.trim()) {
+        this.recordProgress(session, {
+          note: progressNote,
+          signature: options?.progressSignature,
+          force: options?.progressForce,
+          toolName: options?.toolName,
+          toolStatus: options?.toolStatus,
+        });
+      }
+    }
     session.activeRunId = session.activeTaskRun.id;
     this.syncPlanFromTaskRun(session);
     void this.transcriptStore.appendTaskSnapshot(session.id, session.activeTaskRun);
-    if (patch.currentAction) {
+    if (patch.currentAction && !options?.suppressProgressLog && !isHeartbeatAction) {
       void this.transcriptStore.appendProgress(session.id, session.activeTaskRun.id, patch.currentAction);
     }
     this.events.emitPlanUpdate(session, phaseToPlanStatus(session.activeTaskRun));
@@ -451,6 +744,53 @@ export class AgentSessionStore {
     }
   }
 
+  recordStrategyDecision(
+    session: AgentThreadSession,
+    input: {
+      action: StrategyDecisionAction;
+      summary: string;
+      reason: string;
+      routeId?: string;
+      targetRouteId?: string;
+      countAsSelfCheck?: boolean;
+      currentAction?: string;
+      nextAction?: string;
+    },
+  ) {
+    const run = session.activeTaskRun;
+    if (!run) return null;
+
+    const timestamp = now();
+    const entry: StrategyDecision = {
+      id: `strategy-${timestamp}-${Math.random().toString(36).slice(2, 7)}`,
+      action: input.action,
+      summary: clip(input.summary.trim(), 240),
+      reason: clip(input.reason.trim(), 600),
+      routeId: input.routeId,
+      targetRouteId: input.targetRouteId,
+      timestamp,
+    };
+    const nextHistory = [...(run.strategyHistory || []), entry].slice(-12);
+    const nextSelfCheckCount = (run.selfCheckCount || 0) + (input.countAsSelfCheck ? 1 : 0);
+
+    this.upsertTaskRun(session, {
+      strategyHistory: nextHistory,
+      selfCheckCount: nextSelfCheckCount,
+      lastSelfCheckAt: input.countAsSelfCheck ? timestamp : run.lastSelfCheckAt,
+      currentAction: input.currentAction || run.currentAction,
+    }, {
+      nextAction: input.nextAction ?? run.checkpoint.nextAction,
+    }, {
+      trackProgress: false,
+    });
+
+    session.planState.scratchpad = appendScratchpad(
+      session.planState.scratchpad,
+      `Strategy ${input.action}: ${entry.summary} | ${entry.reason}`,
+    );
+    return entry;
+  }
+
   syncPlanFromTaskRun(session: AgentThreadSession) {
     const run = session.activeTaskRun;
     if (!run) return;
@@ -500,11 +840,13 @@ export class AgentSessionStore {
       act: 4,
       verify: 5,
       repair: 4,
+      blocked: 4,
       complete: 5,
       failed: 5,
       paused: 4,
     };
     const currentRank = phaseRank[run.phase];
+    run.longRangePlan = this.buildLongRangePlan(run);
     run.taskTodos = this.reconcileTaskTodos(run);
     session.taskTodos = run.taskTodos;
 
@@ -515,7 +857,7 @@ export class AgentSessionStore {
       if (item.id === currentRank) {
         status = run.status === 'failed'
           ? 'failed'
-          : run.status === 'paused' || run.status === 'retryable_paused'
+          : run.status === 'paused' || run.status === 'retryable_paused' || run.status === 'blocked'
             ? 'waiting_approval'
             : 'in_progress';
       }
@@ -529,7 +871,18 @@ export class AgentSessionStore {
         error: item.error,
       };
     });
-    session.planState.scratchpad = run.checkpoint.knownFacts.slice(0, 12).join('\n');
+    const retainedScratchpad = (session.planState.scratchpad || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const knownFacts = run.checkpoint.knownFacts
+      .slice(-12)
+      .map((fact) => fact.trim())
+      .filter(Boolean);
+    session.planState.scratchpad = Array.from(new Set([
+      ...retainedScratchpad,
+      ...knownFacts,
+    ])).slice(-20).join('\n');
   }
 
   async refreshMemory(session: AgentThreadSession, projectPath?: string) {
@@ -589,6 +942,12 @@ export class AgentSessionStore {
     }, {
       knownFacts,
       completedActions,
+    }, {
+      progressNote: summary,
+      progressSignature: `tool:${toolName}:${result.ok ? 'ok' : 'failed'}:${clip(result.content, 200)}`,
+      progressForce: result.ok,
+      toolName,
+      toolStatus: result.ok ? 'success' : 'failure',
     });
   }
 
@@ -607,7 +966,9 @@ export class AgentSessionStore {
 
   classifyAutonomousFailure(content?: string, fallback?: string): FailureClass {
     const message = `${content || ''}\n${fallback || ''}`.toLowerCase();
-    if (/429|serveroverloaded|toomanyrequests/.test(message)) return 'llm_overloaded';
+    if (/429|serveroverloaded|toomanyrequests|request timed out after \d+s|llm api request failed: request timed out|anthropic api request failed: request timed out/.test(message)) {
+      return 'llm_overloaded';
+    }
     if (/not found|no such file|enoent|cannot access/.test(message)) return 'source_checkout_failed';
     if (/docker compose|docker-compose|shorthand flag: 'd' in -d|is not a docker command/.test(message)) {
       return 'compose_variant_mismatch';
@@ -660,6 +1021,37 @@ export class AgentSessionStore {
       : `Current failure: ${detail}`;
   }
 
+  blockedText(reason: string) {
+    const detail = clip(reason.trim(), 500);
+    return `Task is blocked: ${detail}. Reply with the missing information and I will continue from the current state.`;
+  }
+
+  detectBlocker(content?: string, fallback?: string) {
+    const combined = `${content || ''}\n${fallback || ''}`.trim();
+    if (!combined) return null;
+
+    const askUserMatch = combined.match(/(?:__ASK_USER__|ASK_USER)\s*:?\s*(.+)/i);
+    if (askUserMatch?.[1]?.trim()) {
+      return askUserMatch[1].trim();
+    }
+
+    if (/sudo:.*password is required|sudo:.*a terminal is required|permission denied \(publickey\)|authentication failed|invalid api key|invalid token|token expired/i.test(combined)) {
+      return 'Access is blocked by credentials or authentication. A valid password, key, token, or permission change is required.';
+    }
+
+    if (/(api key|token|secret|password|passphrase|private key|credential|credentials|auth code|verification code)/i.test(combined)
+      && /(missing|required|need|provide|enter|expired|invalid|not set|not configured|unavailable)/i.test(combined)) {
+      return 'A required secret or credential is missing. Provide the needed key, token, password, or secret value to continue.';
+    }
+
+    if (/(domain|dns|callback url|webhook url|license key|备案)/i.test(combined)
+      && /(missing|required|need|provide|confirm|which|what)/i.test(combined)) {
+      return 'A required deployment detail is missing. Provide the exact domain, callback URL, license key, or other requested value to continue.';
+    }
+
+    return null;
+  }
+
   captureKnownProjectPaths(session: AgentThreadSession, input: string) {
     const localMatches = input.match(LOCAL_PROJECT_PATH_RE) || [];
     for (const match of localMatches) {
@@ -689,6 +1081,14 @@ export class AgentSessionStore {
 
     const directMatch = extractDeploySource(goal, session.knownProjectPaths);
     if (directMatch) return directMatch;
+
+    const contextualMatch = this.inferContextualProjectSource(session, goal);
+    if (contextualMatch) {
+      if (!session.knownProjectPaths.includes(contextualMatch)) {
+        session.knownProjectPaths.push(contextualMatch);
+      }
+      return contextualMatch;
+    }
 
     const inferredLocalPath = await this.inferLocalProjectPath(session, goal);
     if (inferredLocalPath) {
@@ -775,30 +1175,78 @@ export class AgentSessionStore {
 
     return Array.from(new Set(candidates))
       .filter((item) => item.length >= 2)
+      .filter((item) => !/^\d+$/.test(item))
       .filter((item) => !stopWords.has(item.toLowerCase()))
       .sort((a, b) => b.length - a.length);
   }
 
   private async findDirectoryMatch(root: string, candidates: string[], exact: boolean) {
-    try {
-      const entries = await fs.readdir(root, { withFileTypes: true });
-      for (const candidate of candidates) {
-        const normalizedCandidate = candidate.toLowerCase();
-        const match = entries.find((entry) => {
-          if (!entry.isDirectory()) return false;
-          const entryName = entry.name.toLowerCase();
-          return exact
-            ? entryName === normalizedCandidate
-            : entryName.includes(normalizedCandidate) || normalizedCandidate.includes(entryName);
-        });
-        if (match) {
-          return path.join(root, match.name);
+    const queue: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+    let bestMatch: { path: string; score: number } | null = null;
+    let scannedDirs = 0;
+
+    while (queue.length > 0 && scannedDirs < 240) {
+      const current = queue.shift()!;
+      let entries: Dirent[];
+      try {
+        entries = await fs.readdir(current.dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      scannedDirs += 1;
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const fullPath = path.join(current.dir, entry.name);
+        const score = this.scoreDirectoryMatch(root, fullPath, candidates, exact);
+        if (score > 0 && (!bestMatch || score > bestMatch.score)) {
+          bestMatch = { path: fullPath, score };
+        }
+        if (current.depth < 2 && !entry.name.startsWith('.')) {
+          queue.push({ dir: fullPath, depth: current.depth + 1 });
         }
       }
-    } catch {
-      return null;
     }
-    return null;
+
+    return bestMatch?.path || null;
+  }
+
+  private scoreDirectoryMatch(root: string, fullPath: string, candidates: string[], exact: boolean) {
+    const relativePath = path.relative(root, fullPath);
+    if (!relativePath) return 0;
+
+    const segments = relativePath
+      .split(path.sep)
+      .map((segment) => segment.trim().toLowerCase())
+      .filter(Boolean);
+    if (!segments.length) return 0;
+
+    const basename = segments[segments.length - 1];
+    let score = 0;
+    let matched = 0;
+
+    candidates.forEach((candidate, index) => {
+      const normalizedCandidate = candidate.toLowerCase();
+      const segmentMatched = segments.some((segment) => (
+        exact
+          ? segment === normalizedCandidate
+          : segment === normalizedCandidate
+            || segment.includes(normalizedCandidate)
+            || normalizedCandidate.includes(segment)
+      ));
+      if (!segmentMatched) return;
+
+      matched += 1;
+      score += 120 - Math.min(index, 10) * 8;
+      if (basename === normalizedCandidate) {
+        score += 80;
+      } else if (!exact && (basename.includes(normalizedCandidate) || normalizedCandidate.includes(basename))) {
+        score += 30;
+      }
+    });
+
+    if (!matched) return 0;
+    return score + segments.length * 12 + matched * 35;
   }
 
   private inferFollowUpSource(session: AgentThreadSession, goal: string) {
@@ -833,6 +1281,55 @@ export class AgentSessionStore {
     }
 
     return run.source.label;
+  }
+
+  private inferContextualProjectSource(session: AgentThreadSession, goal: string) {
+    if (!session.knownProjectPaths.length) return null;
+
+    const aliasMatched = session.knownProjectPaths.find((candidate) => {
+      const aliases = this.projectSourceAliases(candidate);
+      return aliases.some((alias) => alias && goal.toLowerCase().includes(alias.toLowerCase()));
+    });
+    if (aliasMatched) {
+      return aliasMatched;
+    }
+
+    const hasProjectPronoun =
+      /\b(?:it|this|that|current|previous)\b/i.test(goal)
+      || /\u5b83|\u8fd9\u4e2a|\u90a3\u4e2a|\u5f53\u524d|\u4e0a\u4e00\u4e2a|\u521a\u624d\u90a3\u4e2a/.test(goal);
+    if ((looksLikeDeploymentGoal(goal) || looksLikeProjectScopedGoal(goal)) && hasProjectPronoun) {
+      return session.knownProjectPaths[session.knownProjectPaths.length - 1] || null;
+    }
+
+    return null;
+  }
+
+  private projectSourceAliases(candidate: string) {
+    const aliases = new Set<string>();
+    const normalized = candidate.trim();
+    if (!normalized) return [];
+
+    if (/^https?:\/\//i.test(normalized)) {
+      try {
+        const parsed = new URL(normalized);
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        const repo = parts[1]?.replace(/\.git$/i, '');
+        if (parts[0]) aliases.add(parts[0]);
+        if (repo) aliases.add(repo);
+      } catch {
+        // Ignore URL parsing failures and fall back to raw basename logic below.
+      }
+    }
+
+    const basename = path.basename(normalized).trim();
+    if (basename) aliases.add(basename);
+    const parentName = path.basename(path.dirname(normalized)).trim();
+    if (parentName && parentName !== '.' && parentName !== basename) aliases.add(parentName);
+
+    return Array.from(aliases)
+      .map((item) => item.toLowerCase())
+      .filter(Boolean)
+      .filter((item) => item.length >= 2);
   }
 
   private seedFollowUpMemory(session: AgentThreadSession, goal: string) {
@@ -872,14 +1369,97 @@ export class AgentSessionStore {
     ];
   }
 
+  private buildLongRangePlan(run: TaskRunSummary) {
+    const route = run.activeHypothesisId
+      ? run.hypotheses.find((item) => item.id === run.activeHypothesisId)
+      : run.hypotheses[0];
+    const fallbackRoutes = run.hypotheses
+      .filter((item) => item.id !== route?.id)
+      .slice(0, 2)
+      .map((item) => item.kind);
+    const framework = run.repoAnalysis?.framework || 'unknown';
+    const steps = [
+      run.source?.label
+        ? `Lock the source root and inspect deployable assets from ${run.source.label}`
+        : 'Confirm the exact source root before changing the server',
+      `Inspect repository/runtime signals for ${framework} and compare them with the remote server capabilities`,
+      route
+        ? `Primary route: ${route.kind}. Fallbacks: ${fallbackRoutes.length ? fallbackRoutes.join(', ') : 're-inspect source and environment'}`
+        : 'Choose a primary deployment route and keep at least one fallback route ready',
+      this.describeExecutionMilestone(run, route),
+      run.repoAnalysis?.healthCheckCandidates?.length
+        ? `Verify the deployed result with ${run.repoAnalysis.healthCheckCandidates.slice(0, 2).join(' / ')} and capture the final reachable URL`
+        : 'Probe the public site or service port until there is a confirmed reachable result',
+      'If verification fails, summarize what changed, what failed, and switch strategy instead of repeating the same step unchanged',
+    ];
+    return Array.from(new Set(steps.filter(Boolean))).slice(0, 6);
+  }
+
+  private describeExecutionMilestone(run: TaskRunSummary, route?: RouteHypothesis) {
+    const framework = run.repoAnalysis?.framework || 'application';
+    switch (route?.kind) {
+      case 'static-nginx':
+        return 'Prepare the frontend runtime, build static assets, publish dist/build output, and wire nginx to the public endpoint';
+      case 'node-runtime':
+        return 'Install Node dependencies, build if needed, boot the service with a supervisor, and connect nginx or the public port';
+      case 'python-runtime':
+        return 'Install Python dependencies, create the runtime environment, boot the service, and expose it through nginx or the public port';
+      case 'java-runtime':
+        return 'Build the Java artifact, run it under systemd, and connect nginx or the public port';
+      case 'compose-native':
+        return 'Use the repository compose stack, validate service health, and expose the correct public entrypoint';
+      case 'dockerfile-native':
+        return 'Build the repository Docker image, run the container correctly, and verify the exposed entrypoint';
+      default:
+        return `Execute the best deployment path for the ${framework} project, then verify and repair until it is reachable`;
+    }
+  }
+
   private reconcileTaskTodos(run: TaskRunSummary): TaskTodoItem[] {
-    const existing = run.taskTodos?.length ? run.taskTodos : this.createDefaultTodos();
+    const route = run.activeHypothesisId
+      ? run.hypotheses.find((item) => item.id === run.activeHypothesisId)
+      : run.hypotheses[0];
+    const routeSummary = route
+      ? `${route.kind}${run.hypotheses.length > 1 ? ` with fallback ${run.hypotheses.filter((item) => item.id !== route.id).slice(0, 1).map((item) => item.kind).join(', ')}` : ''}`
+      : 'the primary route with a fallback if needed';
+    const existing: TaskTodoItem[] = [
+      {
+        id: 'understand',
+        content: run.source?.label
+          ? `Lock the task goal and source root: ${run.source.label}`
+          : 'Lock the task goal and identify the source root',
+        status: 'pending',
+      },
+      {
+        id: 'inspect',
+        content: run.repoAnalysis
+          ? `Inspect repo/server facts for ${run.repoAnalysis.framework}/${run.repoAnalysis.language} and confirm missing capabilities`
+          : 'Inspect repository structure, runtime requirements, and remote server facts',
+        status: 'pending',
+      },
+      {
+        id: 'hypothesize',
+        content: `Choose ${routeSummary} based on the collected evidence`,
+        status: 'pending',
+      },
+      {
+        id: 'act',
+        content: this.describeExecutionMilestone(run, route),
+        status: 'pending',
+      },
+      {
+        id: 'verify',
+        content: run.longRangePlan?.[4] || 'Verify the externally reachable result and record the final URL',
+        status: 'pending',
+      },
+    ];
     const rankByPhase: Record<TaskRunSummary['phase'], number> = {
       understand: 0,
       inspect: 1,
       hypothesize: 2,
       act: 3,
       repair: 3,
+      blocked: 3,
       verify: 4,
       complete: 4,
       failed: 4,

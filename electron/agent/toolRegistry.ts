@@ -54,6 +54,195 @@ function requireString(args: AgentToolCallArgs, field: string): string {
   return value.trim();
 }
 
+function requireRawText(args: AgentToolCallArgs, field: string): string {
+  const value = args[field];
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Missing required text field: ${field}`);
+  }
+  return value;
+}
+
+function countOccurrences(haystack: string, needle: string) {
+  if (!needle) return 0;
+  let count = 0;
+  let index = 0;
+  while (true) {
+    const found = haystack.indexOf(needle, index);
+    if (found === -1) break;
+    count += 1;
+    index = found + needle.length;
+  }
+  return count;
+}
+
+function replaceInText(
+  original: string,
+  search: string,
+  replace: string,
+  options?: { replaceAll?: boolean; expectedCount?: number },
+) {
+  const matchCount = countOccurrences(original, search);
+  if (matchCount === 0) {
+    throw new Error('Search text was not found in the target file');
+  }
+  if (typeof options?.expectedCount === 'number' && options.expectedCount >= 0 && matchCount !== options.expectedCount) {
+    throw new Error(`Expected ${options.expectedCount} matches but found ${matchCount}`);
+  }
+  if (!options?.replaceAll && matchCount > 1 && typeof options?.expectedCount !== 'number') {
+    throw new Error(`Search text is ambiguous because it appears ${matchCount} times. Provide expectedCount or enable replaceAll.`);
+  }
+  return {
+    updated: options?.replaceAll
+      ? original.split(search).join(replace)
+      : original.replace(search, replace),
+    matchCount,
+  };
+}
+
+type PatchLineKind = 'context' | 'add' | 'remove';
+
+interface UnifiedPatchLine {
+  kind: PatchLineKind;
+  text: string;
+}
+
+interface UnifiedPatchHunk {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  lines: UnifiedPatchLine[];
+}
+
+function detectEol(text: string) {
+  return text.includes('\r\n') ? '\r\n' : '\n';
+}
+
+function splitTextLines(text: string) {
+  const normalized = text.replace(/\r\n/g, '\n');
+  if (!normalized) {
+    return {
+      lines: [] as string[],
+      hasTrailingNewline: false,
+    };
+  }
+  const hasTrailingNewline = normalized.endsWith('\n');
+  const lines = normalized.split('\n');
+  return {
+    lines: hasTrailingNewline ? lines.slice(0, -1) : lines,
+    hasTrailingNewline,
+  };
+}
+
+function parseUnifiedPatch(patch: string): UnifiedPatchHunk[] {
+  const lines = patch.replace(/\r\n/g, '\n').split('\n');
+  const hunks: UnifiedPatchHunk[] = [];
+  let current: UnifiedPatchHunk | null = null;
+
+  for (const line of lines) {
+    const headerMatch = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (headerMatch) {
+      if (current) {
+        hunks.push(current);
+      }
+      current = {
+        oldStart: Number(headerMatch[1]),
+        oldCount: Number(headerMatch[2] || '1'),
+        newStart: Number(headerMatch[3]),
+        newCount: Number(headerMatch[4] || '1'),
+        lines: [],
+      };
+      continue;
+    }
+
+    if (!current) {
+      if (!line || /^(diff --git|index |--- |\+\+\+ )/.test(line)) {
+        continue;
+      }
+      throw new Error('Patch must contain a unified diff hunk header (@@ ... @@)');
+    }
+
+    if (line === '\\ No newline at end of file') {
+      continue;
+    }
+
+    const prefix = line.slice(0, 1);
+    if (prefix !== ' ' && prefix !== '+' && prefix !== '-') {
+      throw new Error(`Unsupported patch line: ${line.slice(0, 80)}`);
+    }
+    current.lines.push({
+      kind: prefix === ' ' ? 'context' : prefix === '+' ? 'add' : 'remove',
+      text: line.slice(1),
+    });
+  }
+
+  if (current) {
+    hunks.push(current);
+  }
+
+  if (!hunks.length) {
+    throw new Error('Patch must contain at least one unified diff hunk');
+  }
+
+  return hunks;
+}
+
+function applyUnifiedPatch(original: string, patch: string) {
+  const hunks = parseUnifiedPatch(patch);
+  const eol = detectEol(original);
+  const { lines: sourceLines, hasTrailingNewline } = splitTextLines(original);
+  const output: string[] = [];
+  let sourceIndex = 0;
+  let addedLines = 0;
+  let removedLines = 0;
+
+  for (const hunk of hunks) {
+    const targetIndex = Math.max(0, hunk.oldStart - 1);
+    if (targetIndex < sourceIndex) {
+      throw new Error('Patch hunks overlap or are out of order');
+    }
+
+    output.push(...sourceLines.slice(sourceIndex, targetIndex));
+    let cursor = targetIndex;
+
+    for (const line of hunk.lines) {
+      if (line.kind === 'add') {
+        output.push(line.text);
+        addedLines += 1;
+        continue;
+      }
+
+      const currentLine = sourceLines[cursor];
+      if (currentLine !== line.text) {
+        throw new Error(`Patch context mismatch near source line ${cursor + 1}`);
+      }
+
+      if (line.kind === 'context') {
+        output.push(currentLine);
+      } else {
+        removedLines += 1;
+      }
+      cursor += 1;
+    }
+
+    sourceIndex = cursor;
+  }
+
+  output.push(...sourceLines.slice(sourceIndex));
+
+  let updated = output.join(eol);
+  if (hasTrailingNewline) {
+    updated += eol;
+  }
+
+  return {
+    updated,
+    hunkCount: hunks.length,
+    addedLines,
+    removedLines,
+  };
+}
+
 async function runLocalCommandWithTimeout(
   command: string,
   timeoutMs: number,
@@ -189,6 +378,39 @@ export function createAgentToolRegistry(
     {
       type: 'function' as const,
       function: {
+        name: 'local_replace_in_file',
+        description: 'Perform an exact text replacement inside a local text file. Prefer this for targeted edits instead of rewriting the whole file.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Absolute or relative local file path.' },
+            search: { type: 'string', description: 'Exact text to find.' },
+            replace: { type: 'string', description: 'Replacement text.' },
+            replaceAll: { type: 'boolean', description: 'Replace all matches. Defaults to false.' },
+            expectedCount: { type: 'number', description: 'Optional exact number of expected matches for safety.' },
+          },
+          required: ['path', 'search', 'replace'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'local_apply_patch',
+        description: 'Apply a unified diff patch to a local text file. Prefer this for multi-line edits with context validation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Absolute or relative local file path.' },
+            patch: { type: 'string', description: 'Unified diff patch text with one or more @@ hunks.' },
+          },
+          required: ['path', 'patch'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
         name: 'local_exec',
         description: 'Execute a command on the local machine. Prefer this for project inspection or build checks.',
         parameters: {
@@ -256,6 +478,39 @@ export function createAgentToolRegistry(
             content: { type: 'string', description: 'Text content to write.' },
           },
           required: ['path', 'content'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'remote_replace_in_file',
+        description: 'Perform an exact text replacement inside a remote text file. Prefer this for targeted remote edits instead of rewriting the whole file.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Absolute remote file path.' },
+            search: { type: 'string', description: 'Exact text to find.' },
+            replace: { type: 'string', description: 'Replacement text.' },
+            replaceAll: { type: 'boolean', description: 'Replace all matches. Defaults to false.' },
+            expectedCount: { type: 'number', description: 'Optional exact number of expected matches for safety.' },
+          },
+          required: ['path', 'search', 'replace'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'remote_apply_patch',
+        description: 'Apply a unified diff patch to a remote text file. Prefer this for multi-line remote edits with context validation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Absolute remote file path.' },
+            patch: { type: 'string', description: 'Unified diff patch text with one or more @@ hunks.' },
+          },
+          required: ['path', 'patch'],
         },
       },
     },
@@ -482,6 +737,39 @@ export function createAgentToolRegistry(
             scratchpadNote: `Wrote local file ${targetPath}`,
           };
         }
+        case 'local_replace_in_file': {
+          const targetPath = normalizeLocalPath(requireString(args, 'path'));
+          const search = requireRawText(args, 'search');
+          const replace = stringify(args.replace ?? '');
+          const replaceAll = args.replaceAll === true;
+          const expectedCount = typeof args.expectedCount === 'number' && Number.isFinite(args.expectedCount)
+            ? Math.max(0, Math.floor(args.expectedCount))
+            : undefined;
+          const original = await fs.readFile(targetPath, 'utf8');
+          const result = replaceInText(original, search, replace, { replaceAll, expectedCount });
+          await fs.writeFile(targetPath, result.updated, 'utf8');
+          return {
+            ok: true,
+            displayCommand: `local replace ${targetPath}`,
+            content: `Updated ${targetPath} (${result.matchCount} match${result.matchCount === 1 ? '' : 'es'})`,
+            structured: { path: targetPath, matchCount: result.matchCount },
+            scratchpadNote: `Applied targeted local edit in ${targetPath}`,
+          };
+        }
+        case 'local_apply_patch': {
+          const targetPath = normalizeLocalPath(requireString(args, 'path'));
+          const patchText = requireRawText(args, 'patch');
+          const original = await fs.readFile(targetPath, 'utf8');
+          const result = applyUnifiedPatch(original, patchText);
+          await fs.writeFile(targetPath, result.updated, 'utf8');
+          return {
+            ok: true,
+            displayCommand: `local patch ${targetPath}`,
+            content: `Patched ${targetPath} (${result.hunkCount} hunk${result.hunkCount === 1 ? '' : 's'}, +${result.addedLines}/-${result.removedLines})`,
+            structured: { path: targetPath, hunkCount: result.hunkCount, addedLines: result.addedLines, removedLines: result.removedLines },
+            scratchpadNote: `Applied unified local patch in ${targetPath}`,
+          };
+        }
         case 'local_exec': {
           const command = requireString(args, 'command');
           const timeoutMs = typeof args.timeoutMs === 'number' && Number.isFinite(args.timeoutMs)
@@ -598,6 +886,59 @@ export function createAgentToolRegistry(
             content: `Wrote ${targetPath}`,
             structured: { path: targetPath },
             scratchpadNote: `Wrote remote file ${targetPath}`,
+          };
+        }
+        case 'remote_replace_in_file': {
+          const targetPath = requireString(args, 'path');
+          const search = requireRawText(args, 'search');
+          const replace = stringify(args.replace ?? '');
+          const replaceAll = args.replaceAll === true;
+          const expectedCount = typeof args.expectedCount === 'number' && Number.isFinite(args.expectedCount)
+            ? Math.max(0, Math.floor(args.expectedCount))
+            : undefined;
+          const original = await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.readFile(session.connectionId, targetPath),
+            () => emitReconnectNote(session),
+          );
+          const result = replaceInText(original, search, replace, { replaceAll, expectedCount });
+          await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.writeFile(session.connectionId, targetPath, result.updated),
+            () => emitReconnectNote(session),
+          );
+          return {
+            ok: true,
+            displayCommand: `remote replace ${targetPath}`,
+            content: `Updated ${targetPath} (${result.matchCount} match${result.matchCount === 1 ? '' : 'es'})`,
+            structured: { path: targetPath, matchCount: result.matchCount },
+            scratchpadNote: `Applied targeted remote edit in ${targetPath}`,
+          };
+        }
+        case 'remote_apply_patch': {
+          const targetPath = requireString(args, 'path');
+          const patchText = requireRawText(args, 'patch');
+          const original = await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.readFile(session.connectionId, targetPath),
+            () => emitReconnectNote(session),
+          );
+          const result = applyUnifiedPatch(original, patchText);
+          await withRemoteReconnect(
+            sshMgr,
+            session.connectionId,
+            () => sshMgr.writeFile(session.connectionId, targetPath, result.updated),
+            () => emitReconnectNote(session),
+          );
+          return {
+            ok: true,
+            displayCommand: `remote patch ${targetPath}`,
+            content: `Patched ${targetPath} (${result.hunkCount} hunk${result.hunkCount === 1 ? '' : 's'}, +${result.addedLines}/-${result.removedLines})`,
+            structured: { path: targetPath, hunkCount: result.hunkCount, addedLines: result.addedLines, removedLines: result.removedLines },
+            scratchpadNote: `Applied unified remote patch in ${targetPath}`,
           };
         }
         case 'remote_upload_file': {

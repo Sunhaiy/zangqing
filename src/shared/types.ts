@@ -43,6 +43,7 @@ export type AgentPlanPhase =
   | 'done'
   | 'stopped'
   | 'paused'
+  | 'blocked'
   | 'waiting_approval';
 
 export interface AgentSessionContextWindow {
@@ -105,6 +106,7 @@ export type TaskRunStatus =
   | 'completed'
   | 'failed'
   | 'paused'
+  | 'blocked'
   | 'retryable_paused';
 
 export type TaskRunPhase =
@@ -116,9 +118,12 @@ export type TaskRunPhase =
   | 'repair'
   | 'complete'
   | 'failed'
+  | 'blocked'
   | 'paused';
 
 export type TaskRunMode = 'project' | 'generic' | 'site-followup';
+
+export type TaskWatchdogState = 'healthy' | 'stalled' | 'recovering';
 
 export interface RouteHypothesis {
   id: string;
@@ -163,6 +168,34 @@ export interface RunCheckpoint {
   knownFacts: string[];
   attemptCount: number;
   nextAction?: string;
+  lastProgressAt: number;
+  lastProgressNote?: string;
+  progressSignature?: string;
+  lastToolName?: string;
+  lastToolStatus?: 'success' | 'failure';
+  lastToolAt?: number;
+  stagnationCount: number;
+  replayCount: number;
+  lastReplayAt?: number;
+  lastReplayReason?: string;
+}
+
+export type StrategyDecisionAction =
+  | 'decompose'
+  | 'self_check'
+  | 'switch_route'
+  | 'retry_route'
+  | 'reinspect_source'
+  | 'replan';
+
+export interface StrategyDecision {
+  id: string;
+  action: StrategyDecisionAction;
+  summary: string;
+  reason: string;
+  routeId?: string;
+  targetRouteId?: string;
+  timestamp: number;
 }
 
 export interface TaskRunSummary {
@@ -183,6 +216,17 @@ export interface TaskRunSummary {
   checkpoint: RunCheckpoint;
   finalUrl?: string;
   currentAction?: string;
+  blockingReason?: string;
+  autoRetryCount?: number;
+  nextAutoRetryAt?: number;
+  lastProgressAt?: number;
+  checkpointReplayCount?: number;
+  watchdogState?: TaskWatchdogState;
+  watchdogAlerts?: number;
+  selfCheckCount?: number;
+  lastSelfCheckAt?: number;
+  strategyHistory: StrategyDecision[];
+  longRangePlan: string[];
   taskTodos: TaskTodoItem[];
   childRuns: ChildTaskSummary[];
   createdAt: number;

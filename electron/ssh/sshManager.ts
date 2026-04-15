@@ -51,6 +51,14 @@ export class SSHManager {
         return this.connectionConfigs.get(sessionId);
     }
 
+    registerPersistentSession(sessionId: string, connection: SSHConnection, webContents: WebContents, profileId?: string) {
+        this.connectionConfigs.set(sessionId, connection);
+        this.webContentsBySession.set(sessionId, webContents);
+        if (profileId) {
+            this.profileIds.set(sessionId, profileId);
+        }
+    }
+
     private _buildConfig(connection: SSHConnection): any {
         const config: any = {
             host: connection.host,
