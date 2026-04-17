@@ -24,14 +24,14 @@ This will concurrently run the Vite renderer process and the Electron main proce
 
 This section guides you through submitting a bug report for Zangqing. Following these guidelines helps maintainers and the community understand your report, reproduce the behavior, and find related reports.
 
-*   **Ensure the bug was not already reported** by searching on GitHub under [Issues](https://github.com/yourusername/sshtool/issues).
+*   **Ensure the bug was not already reported** by searching on GitHub under [Issues](https://github.com/Sunhaiy/zangqing/issues).
 *   If you're unable to find an open issue addressing the problem, open a new one. Be sure to include a **title and clear description**, as much relevant information as possible, and a **code sample** or an **executable test case** demonstrating the expected behavior that is not occurring.
 
 ### Suggesting Enhancements
 
 This section guides you through submitting an enhancement suggestion for Zangqing, including completely new features and minor improvements to existing functionality.
 
-*   **Ensure the enhancement was not already suggested** by searching on GitHub under [Issues](https://github.com/yourusername/sshtool/issues).
+*   **Ensure the enhancement was not already suggested** by searching on GitHub under [Issues](https://github.com/Sunhaiy/zangqing/issues).
 *   When creating an enhancement issue, please provide a clear and detailed explanation of the feature. Describe the current behavior and the behavior you expect to see. Consider including screenshots or mockups if applicable.
 
 ### Pull Requests
