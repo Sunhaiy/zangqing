@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('electron', {
   storeDelete: (key: string) => ipcRenderer.invoke('store-delete', key),
   clipboardWriteText: (text: string) => ipcRenderer.send('clipboard-write', text),
   clipboardReadText: () => ipcRenderer.invoke('clipboard-read'),
+  openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
   // Agent session persistence
   agentSessionList: (profileId: string) => ipcRenderer.invoke('agent-session-list', profileId),

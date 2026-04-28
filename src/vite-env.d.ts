@@ -55,6 +55,7 @@ declare global {
       storeGet: (key: string) => Promise<any>;
       storeSet: (key: string, value: any) => Promise<void>;
       storeDelete: (key: string) => Promise<void>;
+      openExternal: (url: string) => Promise<void>;
 
       agentSessionList: (profileId: string) => Promise<any[]>;
       agentSessionSave: (session: any) => Promise<void>;

@@ -1,10 +1,15 @@
 ﻿import { useState } from 'react';
+import { useEffect } from 'react';
 import {
+  ArrowUpRight,
   ArrowLeft,
+  Bug,
   Check,
   Cpu,
   Eye,
   EyeOff,
+  Github,
+  GitPullRequest,
   Palette,
   Pencil,
   Plus,
@@ -25,6 +30,7 @@ import { useThemeStore } from '../store/themeStore';
 import { AI_PROVIDER_CONFIGS, AIProvider, AIProviderProfile } from '../shared/aiTypes';
 import { Language } from '../shared/locales';
 import { accentColors, baseThemes, BaseThemeId, terminalThemes, TerminalThemeId } from '../shared/themes';
+import logoUrl from '../assets/logo.png';
 
 interface SettingsProps {
   onBack: () => void;
@@ -58,6 +64,7 @@ export function Settings({ onBack }: SettingsProps) {
   const [editingProfile, setEditingProfile] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
   const [visibleProfileKeys, setVisibleProfileKeys] = useState<Record<string, boolean>>({});
+  const [appVersion, setAppVersion] = useState('1.0.8');
 
   const {
     baseThemeId,
@@ -120,6 +127,9 @@ export function Settings({ onBack }: SettingsProps) {
 
   const { t } = useTranslation();
   const isZh = language === 'zh';
+  const repoUrl = 'https://github.com/Sunhaiy/Reflex';
+  const issuesUrl = 'https://github.com/Sunhaiy/Reflex/issues';
+  const pullsUrl = 'https://github.com/Sunhaiy/Reflex/pulls';
   const text = {
     addProfile: isZh ? '添加配置' : 'Add profile',
     emptyProfiles: isZh ? '还没有 AI 配置，先添加一个提供商。' : 'No AI profiles yet. Add a provider first.',
@@ -149,7 +159,37 @@ export function Settings({ onBack }: SettingsProps) {
     accentLocked: isZh ? '当前主题使用固定主色。你选中的颜色会保留，在切回炫酷黑或炫酷白时自动生效。' : 'The current theme uses a fixed accent. Your selection is saved and will apply when switching back to Cool Black or Cool White.',
     terminalPresetDesc: isZh ? '终端预设与 UI 主题一一对应，避免再出现一大屏主题列表。' : 'Terminal presets map to UI themes to keep this page compact.',
     brightBoldDesc: isZh ? '亮色字符自动加粗' : 'Render bright text as bold.',
+    aboutTitle: isZh ? '关于 Reflex' : 'About Reflex',
+    aboutLead: isZh ? '一个以终端为中心的现代远程工作台。' : 'A modern remote workspace built around the terminal.',
+    aboutSummary: isZh
+      ? 'Reflex 把多会话 SSH、SFTP、Docker、系统监控和可执行 Agent 协作整合进一个桌面应用，尽量减少在不同工具之间来回切换。'
+      : 'Reflex brings multi-session SSH, SFTP, Docker, system monitoring, and actionable Agent workflows into one desktop app so you can stay in one place.',
+    aboutBuiltWith: isZh ? '基于 Electron、React 和 Shadcn UI 构建。' : 'Built with Electron, React, and Shadcn UI.',
+    repoLabel: isZh ? '项目仓库' : 'Project repository',
+    repoHint: isZh ? '查看源码、发布版本和开发进展。' : 'Browse the source, releases, and project progress.',
+    communityLabel: isZh ? '社区与贡献' : 'Community and contribution',
+    communityHint: isZh
+      ? '欢迎提交 Issue、Pull Request、功能建议和文档改进，一起把 Reflex 打磨得更好。'
+      : 'Issues, pull requests, feature ideas, and docs improvements are all welcome.',
+    openRepo: isZh ? '打开仓库' : 'Open repository',
+    openIssues: isZh ? '提交 Issue' : 'Open issues',
+    openPulls: isZh ? '查看 PR' : 'Pull requests',
+    thanksTitle: isZh ? '欢迎一起参与' : 'Welcome aboard',
+    thanksBody: isZh
+      ? '如果你在使用过程中发现 Bug、体验问题，或者有新的工作流想法，都可以在 GitHub 上告诉我们。'
+      : 'If you hit a bug, spot rough edges, or have a workflow idea, tell us on GitHub.',
+    versionLabel: isZh ? '当前版本' : 'Current version',
   };
+
+  useEffect(() => {
+    window.electron.getVersion()
+      .then((version) => {
+        if (version) {
+          setAppVersion(version);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
 
   const normalizeModelList = (value: string, fallback?: string) => {
     const rawModels = value.split(/[\n,，]+/).map((model) => model.trim()).filter(Boolean);
@@ -217,6 +257,11 @@ export function Settings({ onBack }: SettingsProps) {
 
   const cardClass = 'border-border/70 bg-card/70 backdrop-blur-xl';
   const sectionClass = 'rounded-xl border border-border/60 bg-background/35 p-4';
+  const openExternal = (url: string) => {
+    window.electron.openExternal(url).catch(() => {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    });
+  };
 
   const renderAppearanceThemeCard = ({
     id,
@@ -337,11 +382,74 @@ export function Settings({ onBack }: SettingsProps) {
         return (
           <Card className={cardClass}>
             <CardHeader className="border-b border-border/60 px-4 py-4 sm:px-5">
-              <CardTitle className="text-base">{t('settings.about.title')}</CardTitle>
-              <CardDescription className="text-xs">{t('settings.about.desc')}</CardDescription>
+              <CardTitle className="text-base">{text.aboutTitle}</CardTitle>
+              <CardDescription className="text-xs">{text.aboutLead}</CardDescription>
             </CardHeader>
-            <CardContent className="px-4 py-4 sm:px-5">
-              <div className="whitespace-pre-line text-sm text-muted-foreground">{t('settings.about.desc')}</div>
+            <CardContent className="space-y-4 px-4 py-4 sm:px-5">
+              <div className="flex flex-col gap-4 rounded-2xl border border-border/60 bg-background/35 p-4 sm:flex-row sm:items-center">
+                <img src={logoUrl} alt="Reflex" className="h-16 w-16 rounded-2xl border border-border/60 object-cover" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-lg font-semibold tracking-tight">Reflex</h3>
+                    <span className="rounded-full border border-border/60 bg-background/60 px-2 py-0.5 text-xs text-muted-foreground">
+                      {text.versionLabel} v{appVersion}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-foreground/90">{text.aboutSummary}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{text.aboutBuiltWith}</p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className={sectionClass}>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Github className="h-4 w-4 text-primary" />
+                    {text.repoLabel}
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">{text.repoHint}</p>
+                  <div className="mt-3 rounded-xl border border-border/60 bg-background/55 px-3 py-2 font-mono text-xs text-foreground/90">
+                    {repoUrl}
+                  </div>
+                </div>
+
+                <div className={sectionClass}>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Star className="h-4 w-4 text-primary" />
+                    {text.communityLabel}
+                  </div>
+                  <p className="mt-2 text-sm text-foreground/90">{text.communityHint}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">{text.thanksBody}</p>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <Button type="button" variant="outline" className="justify-between" onClick={() => openExternal(repoUrl)}>
+                  <span className="inline-flex items-center gap-2">
+                    <Github className="h-4 w-4" />
+                    {text.openRepo}
+                  </span>
+                  <ArrowUpRight className="h-4 w-4" />
+                </Button>
+                <Button type="button" variant="outline" className="justify-between" onClick={() => openExternal(issuesUrl)}>
+                  <span className="inline-flex items-center gap-2">
+                    <Bug className="h-4 w-4" />
+                    {text.openIssues}
+                  </span>
+                  <ArrowUpRight className="h-4 w-4" />
+                </Button>
+                <Button type="button" variant="outline" className="justify-between" onClick={() => openExternal(pullsUrl)}>
+                  <span className="inline-flex items-center gap-2">
+                    <GitPullRequest className="h-4 w-4" />
+                    {text.openPulls}
+                  </span>
+                  <ArrowUpRight className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <div className="rounded-2xl border border-dashed border-border/70 bg-background/25 px-4 py-3">
+                <div className="text-sm font-medium">{text.thanksTitle}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{text.thanksBody}</div>
+              </div>
             </CardContent>
           </Card>
         );

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { restoreBackgroundAgentSessions, setupIpcHandlers } from './ipcHandlers';
@@ -86,7 +86,9 @@ const createWindow = () => {
 };
 
 function createTrayIcon() {
-  const iconPath = getRuntimeAssetPath(process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+  const iconPath = process.platform === 'win32'
+    ? getRuntimeAssetPath('tray-icon.png')
+    : getRuntimeAssetPath('icon.png');
   const image = nativeImage.createFromPath(iconPath);
   if (image.isEmpty()) {
     return nativeImage.createFromPath(getRuntimeAssetPath('logo.png')).resize({ width: 16, height: 16 });
@@ -130,6 +132,7 @@ function createTray() {
 
 app.whenReady().then(() => {
   setupIpcHandlers();
+  ipcMain.handle('open-external', async (_event, url: string) => shell.openExternal(url));
   createTray();
   createWindow();
 
