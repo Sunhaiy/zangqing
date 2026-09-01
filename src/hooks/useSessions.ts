@@ -29,26 +29,16 @@ export function useSessions({ openWorkspace, leaveWorkspace, onConnected }: Sess
   const [error, setError] = useState<string | null>(null);
   const restoredRef = useRef(false);
   const autoConnectedRef = useRef(false);
+  const sessionsRef = useRef(sessions);
+  const activeSessionIdRef = useRef(activeSessionId);
+  const reconnectingRef = useRef(new Set<string>());
+  const windowFocusedRef = useRef(document.hasFocus());
+
+  sessionsRef.current = sessions;
+  activeSessionIdRef.current = activeSessionId;
 
   const { t } = useTranslation();
   const { startConnectionUsage, finishConnectionUsage } = useConnectionUsage();
-
-  useEffect(() => {
-    return window.electron.onSSHStatus((_event, { id, status }) => {
-      if (status === 'connected') startConnectionUsage(id);
-      if (status === 'disconnected') finishConnectionUsage(id);
-      setSessions((current) => current.map((session) =>
-        session.uniqueId === id
-          ? {
-            ...session,
-            status: status as SessionStatus,
-            connectedAt: status === 'connected' ? (session.connectedAt || Date.now()) : undefined,
-          }
-          : session
-      ));
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Skipped until the restore below has run, so an empty starting list never overwrites
   // the set of sessions that is about to be reopened.
@@ -112,24 +102,88 @@ export function useSessions({ openWorkspace, leaveWorkspace, onConnected }: Sess
   };
 
   const reconnect = async (sessionId: string) => {
+    if (reconnectingRef.current.has(sessionId)) return;
+    reconnectingRef.current.add(sessionId);
     setSessions((current) => current.map((session) =>
       session.uniqueId === sessionId ? { ...session, status: 'connecting' } : session
     ));
 
-    const result = await window.electron.sshReconnect(sessionId);
-    if (!result.success) {
-      setSessions((current) => current.map((session) =>
-        session.uniqueId === sessionId ? { ...session, status: 'disconnected', connectedAt: undefined } : session
-      ));
-      setError(t('shell.reconnectFailed', { error: result.error || 'Unknown error' }));
-      return;
-    }
+    try {
+      const result = await window.electron.sshReconnect(sessionId);
+      if (!result.success) {
+        setSessions((current) => current.map((session) =>
+          session.uniqueId === sessionId ? { ...session, status: 'disconnected', connectedAt: undefined } : session
+        ));
+        setError(t('shell.reconnectFailed', { error: result.error || 'Unknown error' }));
+        return;
+      }
 
-    const connectedAt = startConnectionUsage(sessionId);
-    setSessions((current) => current.map((session) =>
-      session.uniqueId === sessionId ? { ...session, status: 'connected', connectedAt } : session
-    ));
+      const connectedAt = startConnectionUsage(sessionId);
+      setSessions((current) => current.map((session) =>
+        session.uniqueId === sessionId ? { ...session, status: 'connected', connectedAt } : session
+      ));
+    } finally {
+      reconnectingRef.current.delete(sessionId);
+    }
   };
+
+  const reconnectRef = useRef(reconnect);
+  reconnectRef.current = reconnect;
+
+  useEffect(() => {
+    return window.electron.onSSHStatus((_event, { id, status }) => {
+      const wasConnected = sessionsRef.current.some((session) =>
+        session.uniqueId === id && session.status === 'connected'
+      );
+
+      if (status === 'connected') startConnectionUsage(id);
+      if (status === 'disconnected') finishConnectionUsage(id);
+      setSessions((current) => current.map((session) =>
+        session.uniqueId === id
+          ? {
+            ...session,
+            status: status as SessionStatus,
+            connectedAt: status === 'connected' ? (session.connectedAt || Date.now()) : undefined,
+          }
+          : session
+      ));
+
+      // A disconnect can arrive just after focus, so recover here as well as in the
+      // focus handler. Connecting sessions are excluded to avoid fighting connect retries.
+      if (
+        status === 'disconnected'
+        && wasConnected
+        && windowFocusedRef.current
+        && activeSessionIdRef.current === id
+      ) {
+        void reconnectRef.current(id);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const reconnectActiveSession = () => {
+      const active = sessionsRef.current.find((session) =>
+        session.uniqueId === activeSessionIdRef.current
+      );
+      if (active?.status === 'disconnected') void reconnectRef.current(active.uniqueId);
+    };
+    const handleFocus = () => {
+      windowFocusedRef.current = true;
+      reconnectActiveSession();
+    };
+    const handleBlur = () => {
+      windowFocusedRef.current = false;
+    };
+
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
 
   /** Brings an already-open session forward, waking it first if it has dropped. */
   const focusSession = (sessionId: string) => {
@@ -219,7 +273,6 @@ export function useSessions({ openWorkspace, leaveWorkspace, onConnected }: Sess
       }
     })();
     // Runs once when the shell starts.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return {
